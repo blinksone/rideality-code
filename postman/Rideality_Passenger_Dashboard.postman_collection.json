@@ -1,0 +1,209 @@
+{
+  "info": {
+    "_postman_id": "a8f3c2d1-rideality-passenger-dash-001",
+    "name": "Rideality — Passenger Dashboard",
+    "description": "APIs used by the Rideality Flutter passenger dashboard and post-auth flows.\n\nBase URL: http://65.21.177.122:3000/api/v1\n\n1. Auth → send OTP → verify OTP (copy `accessToken` into collection variable `token`)\n2. Complete profile if needed (POST /users/me/profile)\n3. Use Me / Passenger / Wallet / Rides / Locations from the dashboard.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://65.21.177.122:3000/api/v1" },
+    { "key": "token", "value": "" },
+    { "key": "regionId", "value": "" },
+    { "key": "phone", "value": "+923001234567" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "List regions",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/regions",
+            "description": "Pick a regionId for OTP send."
+          }
+        },
+        {
+          "name": "Send OTP",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"regionId\": \"{{regionId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/auth/otp/send"
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const data = json.data || json;",
+                  "const token = data.accessToken || data.access_token || data.token;",
+                  "if (token) {",
+                  "  pm.collectionVariables.set('token', token);",
+                  "  console.log('Saved access token');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"code\": \"123456\",\n  \"regionId\": \"{{regionId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/auth/otp/verify",
+            "description": "Dev often accepts 123456. Saves token to collection variable."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Onboarding / Profile",
+      "item": [
+        {
+          "name": "Get onboarding status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/users/me/onboarding"
+          }
+        },
+        {
+          "name": "Create passenger profile",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"passenger\",\n  \"fullName\": \"Irfan\",\n  \"email\": \"irfan@example.com\",\n  \"preferredLanguage\": \"en\"\n}"
+            },
+            "url": "{{baseUrl}}/users/me/profile"
+          }
+        },
+        {
+          "name": "Update profile (PATCH me)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Irfan\",\n  \"email\": \"irfan@example.com\",\n  \"preferredLanguage\": \"en\"\n}"
+            },
+            "url": "{{baseUrl}}/users/me"
+          }
+        },
+        {
+          "name": "Upload profile photo",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/users/me/photo"
+          }
+        },
+        {
+          "name": "Save locations",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"locations\": [\n    {\n      \"label\": \"home\",\n      \"address\": \"123 Main St\",\n      \"latitude\": 40.7128,\n      \"longitude\": -74.006\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/users/me/locations"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard",
+      "item": [
+        {
+          "name": "Get me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/users/me",
+            "description": "Home header + profile completion inputs."
+          }
+        },
+        {
+          "name": "Get passenger view",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/users/me/passenger"
+          }
+        },
+        {
+          "name": "Get wallet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/users/me/wallet"
+          }
+        },
+        {
+          "name": "List wallet transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/wallet/transactions?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "me", "wallet", "transactions"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List my rides (Activity)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/rides?page=1&limit=20&status=all",
+              "host": ["{{baseUrl}}"],
+              "path": ["users", "me", "rides"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "status", "value": "all" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
