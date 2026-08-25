@@ -1,5 +1,7 @@
 import '../core/api/api_client.dart';
+import '../core/api/api_exception.dart';
 import '../models/api_models.dart';
+import '../models/trip_models.dart';
 import 'user_api_service.dart';
 
 class DriverApiService {
@@ -66,19 +68,27 @@ class DriverApiService {
   Future<List<DriverDocument>> listDocuments() async {
     final json = await _client.get('/users/me/documents');
     final data = json['data'];
+    List<DriverDocument> parsed;
     if (data is List) {
-      return data
+      parsed = data
           .whereType<Map>()
           .map((e) => DriverDocument.fromJson(e.cast<String, dynamic>()))
           .toList();
-    }
-    if (data is Map && data['items'] is List) {
-      return (data['items'] as List)
+    } else if (data is Map && data['items'] is List) {
+      parsed = (data['items'] as List)
           .whereType<Map>()
           .map((e) => DriverDocument.fromJson(e.cast<String, dynamic>()))
           .toList();
+    } else {
+      return const [];
     }
-    return const [];
+    return DriverDocument.indexByType(parsed).values.toList();
+  }
+
+  /// Latest document row per type (rejected overrides approved history).
+  Future<Map<String, DriverDocument>> listDocumentsByType() async {
+    final docs = await listDocuments();
+    return DriverDocument.indexByType(docs);
   }
 
   Future<DriverView> getDriverView() async {
@@ -88,18 +98,71 @@ class DriverApiService {
     );
   }
 
-  /// PATCH /users/me/driver/availability — requires approved driver (can_drive).
-  Future<DriverView> setAvailability({required bool isOnline}) async {
+  /// PATCH /users/me/driver/availability
+  /// Optional [modes] so going online registers service filters in one call.
+  Future<DriverView> setAvailability({
+    required bool isOnline,
+    List<DriverServiceMode>? modes,
+  }) async {
+    final body = <String, dynamic>{'isOnline': isOnline};
+    if (modes != null && modes.isNotEmpty) {
+      body['modes'] = DriverServiceMode.toApiList(modes);
+    }
     final json = await _client.patch(
       '/users/me/driver/availability',
-      body: {'isOnline': isOnline},
+      body: body,
     );
     final data = (json['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     // Some responses wrap driver / return partial flags.
-    if (data.containsKey('onboardingStatus') || data.containsKey('isOnline')) {
+    if (data.containsKey('onboardingStatus') ||
+        data.containsKey('isOnline') ||
+        data.containsKey('serviceModes')) {
       return DriverView.fromJson(data);
     }
     return getDriverView();
+  }
+
+  /// PATCH /drivers/me/service-modes — body: { modes: ['rides','cargo'] }
+  /// Alias: PATCH /users/me/driver/service-modes
+  Future<DriverView> setServiceModes(List<DriverServiceMode> modes) async {
+    final payload =
+        modes.isEmpty ? const [DriverServiceMode.rides] : modes;
+    final body = {'modes': DriverServiceMode.toApiList(payload)};
+    try {
+      final json = await _client.patch(
+        '/drivers/me/service-modes',
+        body: body,
+      );
+      return _driverFromModesResponse(json, payload);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        final json = await _client.patch(
+          '/users/me/driver/service-modes',
+          body: body,
+        );
+        return _driverFromModesResponse(json, payload);
+      }
+      rethrow;
+    }
+  }
+
+  Future<DriverView> _driverFromModesResponse(
+    Map<String, dynamic> json,
+    List<DriverServiceMode> payload,
+  ) async {
+    final data = (json['data'] as Map?)?.cast<String, dynamic>() ?? const {};
+    if (data.isNotEmpty &&
+        (data.containsKey('serviceModes') ||
+            data.containsKey('onboardingStatus') ||
+            data.containsKey('isOnline'))) {
+      return DriverView.fromJson(data);
+    }
+    try {
+      final view = await getDriverView();
+      return view.copyWith(serviceModes: payload);
+    } catch (_) {
+      return DriverView.empty.copyWith(serviceModes: payload);
+    }
   }
 
   /// PATCH /users/me/mode — activeMode: passenger | driver

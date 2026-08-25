@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import '../core/api/api_client.dart';
 import '../core/api/api_exception.dart';
 import '../core/storage/token_storage.dart';
 import '../models/api_models.dart';
+import 'push_notification_service.dart';
 
 class AuthApiService {
   AuthApiService({ApiClient? client, TokenStorage? storage})
@@ -66,6 +69,7 @@ class AuthApiService {
     required String phone,
     required String code,
     required String regionCode,
+    String? countryRegionId,
   }) async {
     final json = await _client.post(
       '/auth/otp/verify',
@@ -86,7 +90,10 @@ class AuthApiService {
       userId: session.user.id,
       phone: phone,
       regionCode: regionCode,
+      countryRegionId: countryRegionId ?? session.user.regionId,
     );
+    // Register FCM after login so backend can push offers/status.
+    unawaited(PushNotificationService.instance.registerTokenWithBackend());
     return session;
   }
 

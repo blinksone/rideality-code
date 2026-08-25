@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "261821276239",
+    "project_id": "rideality",
+    "storage_bucket": "rideality.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:261821276239:android:2546f1b0a12d4b27bcca3a",
+        "android_client_info": {
+          "package_name": "com.rideality.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAT3nOsrj_u6fDmqECkRGPJMXkNWrp75uk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/phone_rules.dart';
 import '../../models/api_models.dart';
 import '../../models/phone_verification_args.dart';
 import '../../services/auth_api_service.dart';
@@ -76,15 +77,35 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  int get _maxInputDigits {
+    final range = PhoneRules.lengthFor(_selectedRegion?.code);
+    return range.max + 1;
+  }
+
+  void _onRegionChanged(Region? region) {
+    if (region == null) return;
+    final max = PhoneRules.lengthFor(region.code).max + 1;
+    final text = _phoneController.text.replaceAll(RegExp(r'\D'), '');
+    setState(() {
+      _selectedRegion = region;
+      if (text.length > max) {
+        _phoneController.text = text.substring(0, max);
+        _phoneController.selection =
+            TextSelection.collapsed(offset: _phoneController.text.length);
+      }
+    });
+  }
+
   Future<void> _sendCode() async {
     final region = _selectedRegion;
-    final local = _phoneController.text.trim();
     if (region == null) {
       _toast('Please select a country');
       return;
     }
-    if (local.replaceAll(RegExp(r'\D'), '').length < 7) {
-      _toast('Enter a valid phone number');
+    final local = PhoneRules.normalizeLocal(_phoneController.text);
+    final error = PhoneRules.validateLocal(local, region.code);
+    if (error != null) {
+      _toast(error);
       return;
     }
 
@@ -215,8 +236,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                     ),
                                   )
                                   .toList(),
-                              onChanged: (v) =>
-                                  setState(() => _selectedRegion = v),
+                              onChanged: _onRegionChanged,
                             ),
                           ),
                         ),
@@ -227,6 +247,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             keyboardType: TextInputType.phone,
                             inputFormatters: [
                               FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(_maxInputDigits),
                             ],
                             style: Theme.of(context)
                                 .textTheme
@@ -236,7 +257,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   letterSpacing: 0.4,
                                 ),
                             decoration: InputDecoration(
-                              hintText: 'Mobile number',
+                              hintText: PhoneRules.hintFor(_selectedRegion?.code),
                               hintStyle: Theme.of(context)
                                   .textTheme
                                   .titleMedium
@@ -244,6 +265,16 @@ class _LoginScreenState extends State<LoginScreen> {
                                     color: AppColors.onSurfaceVariant
                                         .withValues(alpha: 0.7),
                                     fontWeight: FontWeight.w500,
+                                  ),
+                              prefixText: _selectedRegion == null
+                                  ? null
+                                  : '${_selectedRegion!.phonePrefix} ',
+                              prefixStyle: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.onSurfaceVariant,
                                   ),
                               prefixIcon: const Icon(
                                 Icons.smartphone_rounded,

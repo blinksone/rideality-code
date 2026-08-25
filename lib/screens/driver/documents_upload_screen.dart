@@ -1,12 +1,19 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../models/api_models.dart';
+import '../../models/verification_models.dart';
 import '../../services/driver_api_service.dart';
 import '../../services/image_picker_service.dart';
+import '../../services/verification/license_ocr_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/app_button.dart';
 import '../../widgets/progress_stepper.dart';
 import '../../widgets/rideality_app_bar.dart';
+import 'selfie_verification_screen.dart';
 import 'under_review_screen.dart';
 
 class DocumentsUploadScreen extends StatefulWidget {
@@ -28,8 +35,34 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
   bool _licenseRegistered = false;
   bool _selfieRegistered = false;
   bool _idRegistered = false;
+  Map<String, DriverDocument> _serverDocs = const {};
 
   static const _labels = ['Phone', 'OTP', 'Identity', 'Vehicle', 'Docs'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExisting();
+  }
+
+  Future<void> _loadExisting() async {
+    try {
+      final map = await DriverApiService.instance.listDocumentsByType();
+      if (!mounted) return;
+      final license = map['driver_license'];
+      final selfie = map['selfie'];
+      final id = map['national_id'];
+      setState(() {
+        _serverDocs = map;
+        _licenseRegistered = license != null && !license.needsResubmission;
+        _selfieRegistered = selfie != null && !selfie.needsResubmission;
+        _idRegistered = id != null && !id.needsResubmission;
+      });
+    } catch (_) {}
+  }
+
+  bool get _hasRejectedDocs =>
+      _serverDocs.values.any((d) => d.needsResubmission);
 
   String _fmt(DateTime d) =>
       '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -46,35 +79,123 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
     if (picked != null) setState(() => _licenseExpiry = picked);
   }
 
+  Future<void> _pickLicense() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take photo'),
+                onTap: () => Navigator.pop(ctx, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from gallery'),
+                onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (source == null) return;
+    await _pickAndRegister(
+      key: 'license',
+      type: 'driver_license',
+      useCamera: source == ImageSource.camera,
+      runOcr: true,
+    );
+  }
+
+  Future<void> _pickSelfie() async {
+    final result = await Navigator.of(context).pushNamed(
+      SelfieVerificationScreen.routeName,
+    );
+    if (result is! SelfieCaptureResult || !mounted) return;
+    try {
+      await _registerPickedFile(
+        key: 'selfie',
+        type: 'selfie',
+        picked: PickedImageFile(
+          file: XFile(result.imagePath),
+          name: 'selfie.jpg',
+        ),
+        deleteAfter: true,
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   Future<void> _pickAndRegister({
     required String key,
     required String type,
     required bool useCamera,
     String? expiresAt,
+    bool runOcr = false,
   }) async {
     setState(() => _uploadingKey = key);
     try {
-      final picked =
-          await ImagePickerService.instance.pickDocument(useCamera: useCamera);
+      final picked = await ImagePickerService.instance.pickDocument(
+        useCamera: useCamera,
+      );
       if (picked == null || !mounted) return;
 
-      setState(() {
-        switch (key) {
-          case 'license':
-            _license = picked;
-          case 'selfie':
-            _selfie = picked;
-          case 'id':
-            _nationalId = picked;
+      if (runOcr && key == 'license') {
+        final expiry =
+            await LicenseOcrService.instance.extractExpiry(picked.file.path);
+        if (expiry != null && mounted) {
+          setState(() => _licenseExpiry = expiry);
         }
-      });
+      }
 
+      await _registerPickedFile(
+        key: key,
+        type: type,
+        picked: picked,
+        expiresAt: expiresAt ??
+            (_licenseExpiry == null ? null : _fmt(_licenseExpiry!)),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _uploadingKey = null);
+    }
+  }
+
+  Future<void> _registerPickedFile({
+    required String key,
+    required String type,
+    required PickedImageFile picked,
+    String? expiresAt,
+    bool deleteAfter = false,
+  }) async {
+    setState(() {
+      _uploadingKey = key;
+      switch (key) {
+        case 'license':
+          _license = picked;
+        case 'selfie':
+          _selfie = picked;
+        case 'id':
+          _nationalId = picked;
+      }
+    });
+    try {
       await DriverApiService.instance.uploadAndRegisterDocument(
         type: type,
         filePath: picked.file.path,
         expiresAt: expiresAt,
       );
-
+      await _loadExisting();
       if (!mounted) return;
       setState(() {
         switch (key) {
@@ -89,11 +210,13 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('${type.replaceAll('_', ' ')} uploaded')),
       );
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(e.message)));
     } finally {
+      if (deleteAfter) {
+        try {
+          final file = File(picked.file.path);
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
       if (mounted) setState(() => _uploadingKey = null);
     }
   }
@@ -135,12 +258,16 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
                     ),
                     const SizedBox(height: 28),
                     Text(
-                      'Upload documents',
+                      _hasRejectedDocs
+                          ? 'Re-upload rejected documents'
+                          : 'Upload documents',
                       style: Theme.of(context).textTheme.headlineMedium,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Driver license is required. Selfie is recommended for faster review.',
+                      _hasRejectedDocs
+                          ? 'Only the items marked Re-upload need a new photo. Approved documents stay on file.'
+                          : 'Driver license is required. Selfie is recommended for faster review.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             height: 1.4,
                           ),
@@ -151,7 +278,7 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
                       borderRadius: BorderRadius.circular(12),
                       child: InputDecorator(
                         decoration: const InputDecoration(
-                          labelText: 'License expiry (recommended)',
+                          labelText: 'License expiry (from photo or picker)',
                           prefixIcon: Icon(Icons.event_outlined),
                         ),
                         child: Text(
@@ -173,25 +300,19 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
                       icon: Icons.badge_outlined,
                       title: 'Driver license',
                       description:
-                          'Required — front of your license, clearly visible.',
+                          'Required — photo of the front. Expiry is read with OCR when possible.',
                       badge: 'Required',
                       badgeColor: AppColors.errorContainer,
                       badgeTextColor: AppColors.onErrorContainer,
                       accent: true,
                       image: _license,
                       registered: _licenseRegistered,
+                      serverDoc: _serverDocs['driver_license'],
                       actionLabel: _licenseRegistered ? 'Uploaded' : 'Upload',
                       actionIcon: Icons.upload_rounded,
                       filledAction: true,
                       isLoading: _uploadingKey == 'license',
-                      onAction: () => _pickAndRegister(
-                        key: 'license',
-                        type: 'driver_license',
-                        useCamera: false,
-                        expiresAt: _licenseExpiry == null
-                            ? null
-                            : _fmt(_licenseExpiry!),
-                      ),
+                      onAction: _pickLicense,
                       onRemove: () => setState(() {
                         _license = null;
                         _licenseRegistered = false;
@@ -202,21 +323,30 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
                       icon: Icons.photo_camera_outlined,
                       title: 'Selfie',
                       description:
-                          'Recommended for KYC. Hold phone at eye level.',
-                      badge: 'Recommended',
-                      badgeColor: AppColors.surfaceContainer,
-                      badgeTextColor: AppColors.onSurfaceVariant,
+                          'Front camera. Keep your face inside the circle.',
+                      badge: _serverDocs['selfie']?.needsResubmission == true
+                          ? 'Re-upload'
+                          : 'Recommended',
+                      badgeColor:
+                          _serverDocs['selfie']?.needsResubmission == true
+                              ? AppColors.errorContainer
+                              : AppColors.surfaceContainer,
+                      badgeTextColor:
+                          _serverDocs['selfie']?.needsResubmission == true
+                              ? AppColors.onErrorContainer
+                              : AppColors.onSurfaceVariant,
                       image: _selfie,
                       registered: _selfieRegistered,
-                      actionLabel:
-                          _selfieRegistered ? 'Uploaded' : 'Take photo',
+                      serverDoc: _serverDocs['selfie'],
+                      actionLabel: _serverDocs['selfie']?.needsResubmission ==
+                              true
+                          ? 'Re-upload selfie'
+                          : _selfieRegistered
+                              ? 'Uploaded'
+                              : 'Take photo',
                       actionIcon: Icons.camera_alt_rounded,
                       isLoading: _uploadingKey == 'selfie',
-                      onAction: () => _pickAndRegister(
-                        key: 'selfie',
-                        type: 'selfie',
-                        useCamera: true,
-                      ),
+                      onAction: _pickSelfie,
                       onRemove: () => setState(() {
                         _selfie = null;
                         _selfieRegistered = false;
@@ -232,6 +362,7 @@ class _DocumentsUploadScreenState extends State<DocumentsUploadScreen> {
                       badgeTextColor: AppColors.onSurfaceVariant,
                       image: _nationalId,
                       registered: _idRegistered,
+                      serverDoc: _serverDocs['national_id'],
                       actionLabel: _idRegistered ? 'Uploaded' : 'Add',
                       actionIcon: Icons.add_rounded,
                       textOnlyAction: true,
@@ -291,6 +422,7 @@ class _DocumentCard extends StatelessWidget {
     required this.badgeTextColor,
     required this.image,
     required this.registered,
+    this.serverDoc,
     required this.actionLabel,
     required this.actionIcon,
     required this.onAction,
@@ -309,6 +441,7 @@ class _DocumentCard extends StatelessWidget {
   final Color badgeTextColor;
   final PickedImageFile? image;
   final bool registered;
+  final DriverDocument? serverDoc;
   final String actionLabel;
   final IconData actionIcon;
   final VoidCallback onAction;
@@ -321,6 +454,13 @@ class _DocumentCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uploaded = image != null;
+    final needsReupload = serverDoc?.needsResubmission ?? false;
+    final actionEnabled = !registered || needsReupload;
+    final label = needsReupload
+        ? (title.toLowerCase().contains('selfie')
+            ? 'Re-upload selfie'
+            : 'Re-upload')
+        : actionLabel;
 
     return Container(
       width: double.infinity,
@@ -425,6 +565,24 @@ class _DocumentCard extends StatelessWidget {
                         description,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
+                      if (serverDoc != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          serverDoc!.needsResubmission
+                              ? 'Rejected${serverDoc!.rejectionReason != null && serverDoc!.rejectionReason!.isNotEmpty ? ' — ${serverDoc!.rejectionReason}' : ''}'
+                              : serverDoc!.isApproved
+                                  ? 'Approved by city fleet'
+                                  : 'Pending city review',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: serverDoc!.needsResubmission
+                                    ? AppColors.error
+                                    : serverDoc!.isApproved
+                                        ? AppColors.success
+                                        : AppColors.amber,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -441,9 +599,9 @@ class _DocumentCard extends StatelessWidget {
                     )
                   : textOnlyAction
                       ? TextButton(
-                          onPressed: registered ? null : onAction,
+                          onPressed: actionEnabled ? onAction : null,
                           child: Text(
-                            actionLabel,
+                            label,
                             style: Theme.of(context)
                                 .textTheme
                                 .labelLarge
@@ -455,19 +613,21 @@ class _DocumentCard extends StatelessWidget {
                         )
                       : filledAction
                           ? FilledButton.icon(
-                              onPressed: registered ? null : onAction,
+                              onPressed: actionEnabled ? onAction : null,
                               style: FilledButton.styleFrom(
-                                backgroundColor: AppColors.secondary,
+                                backgroundColor: needsReupload
+                                    ? AppColors.error
+                                    : AppColors.secondary,
                                 foregroundColor: Colors.white,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                               ),
                               icon: Icon(actionIcon, size: 18),
-                              label: Text(actionLabel),
+                              label: Text(label),
                             )
                           : OutlinedButton.icon(
-                              onPressed: registered ? null : onAction,
+                              onPressed: actionEnabled ? onAction : null,
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: AppColors.secondary,
                                 side: const BorderSide(
@@ -478,7 +638,7 @@ class _DocumentCard extends StatelessWidget {
                                 ),
                               ),
                               icon: Icon(actionIcon, size: 18),
-                              label: Text(actionLabel),
+                              label: Text(label),
                             ),
             ),
             if (uploaded) ...[

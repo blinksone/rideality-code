@@ -12,6 +12,8 @@ class TokenStorage {
   static const _userId = 'user_id';
   static const _phone = 'phone';
   static const _region = 'region_code';
+  static const _countryRegionId = 'country_region_id';
+  static const _pendingOnboardingIntent = 'pending_onboarding_intent';
 
   Future<void> saveSession({
     required String accessToken,
@@ -20,6 +22,7 @@ class TokenStorage {
     String? userId,
     String? phone,
     String? regionCode,
+    String? countryRegionId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_access, accessToken);
@@ -28,6 +31,9 @@ class TokenStorage {
     if (userId != null) await prefs.setString(_userId, userId);
     if (phone != null) await prefs.setString(_phone, phone);
     if (regionCode != null) await prefs.setString(_region, regionCode);
+    if (countryRegionId != null && countryRegionId.isNotEmpty) {
+      await prefs.setString(_countryRegionId, countryRegionId);
+    }
   }
 
   /// Updates tokens after [POST /auth/refresh] (refresh may be rotated).
@@ -61,6 +67,9 @@ class TokenStorage {
   Future<String?> get regionCode async =>
       (await SharedPreferences.getInstance()).getString(_region);
 
+  Future<String?> get countryRegionId async =>
+      (await SharedPreferences.getInstance()).getString(_countryRegionId);
+
   /// True when a non-empty access token is stored (session may still be expired).
   Future<bool> get hasSession async {
     final token = await accessToken;
@@ -75,7 +84,24 @@ class TokenStorage {
     await prefs.remove(_userId);
     await prefs.remove(_phone);
     await prefs.remove(_region);
+    await prefs.remove(_countryRegionId);
+    await prefs.remove(_pendingOnboardingIntent);
   }
+
+  /// Used to restore onboarding flow across app relaunches
+  /// (e.g. driver OTP → abandon driver steps → next cold start).
+  Future<void> setPendingOnboardingIntent(String? intent) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (intent == null || intent.isEmpty) {
+      await prefs.remove(_pendingOnboardingIntent);
+      return;
+    }
+    await prefs.setString(_pendingOnboardingIntent, intent);
+  }
+
+  Future<String?> get pendingOnboardingIntent async =>
+      (await SharedPreferences.getInstance())
+          .getString(_pendingOnboardingIntent);
 }
 
 /// Local UI flags for passenger dashboard (banner dismissals, last search).
@@ -86,6 +112,10 @@ class DashboardPrefs {
   static const _profileBanner = 'hide_profile_progress_banner';
   static const _promoBanner = 'hide_promo_banner';
   static const _lastDestination = 'last_destination_query';
+  static const _fleetCompanyName = 'fleet_company_name';
+  static const _fleetCityName = 'fleet_city_name';
+  static const _fleetCompanyId = 'fleet_company_id';
+  static const _fleetCityId = 'fleet_city_id';
 
   Future<bool> get isProfileBannerHidden async =>
       (await SharedPreferences.getInstance()).getBool(_profileBanner) ?? false;
@@ -108,6 +138,25 @@ class DashboardPrefs {
     await (await SharedPreferences.getInstance())
         .setString(_lastDestination, value);
   }
+
+  Future<void> saveFleetAssignment({
+    required String companyId,
+    required String companyName,
+    required String cityId,
+    required String cityName,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_fleetCompanyId, companyId);
+    await prefs.setString(_fleetCompanyName, companyName);
+    await prefs.setString(_fleetCityId, cityId);
+    await prefs.setString(_fleetCityName, cityName);
+  }
+
+  Future<String?> get fleetCompanyName async =>
+      (await SharedPreferences.getInstance()).getString(_fleetCompanyName);
+
+  Future<String?> get fleetCityName async =>
+      (await SharedPreferences.getInstance()).getString(_fleetCityName);
 }
 
 /// In-app notification inbox (local). Live server has prefs APIs only, no feed.

@@ -49,5 +49,9 @@
 	<string>Rideality needs camera access to take profile and verification photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Rideality needs photo library access to upload profile and document images.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Rideality needs your location to request rides and share driver position during trips.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Rideality needs location access so drivers can stay available for nearby ride requests.</string>
 </dict>
 </plist>

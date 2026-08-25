@@ -87,6 +87,10 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
     }
   }
 
+  void _skip() {
+    Navigator.of(context).pushNamed(DocumentsUploadScreen.routeName);
+  }
+
   ThemeData _tintedFieldTheme(BuildContext context) {
     final base = Theme.of(context);
     final soft = OutlineInputBorder(
@@ -148,7 +152,9 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Exact details help passengers find you at the curb.',
+                        widget.fromDashboard
+                            ? 'Exact details help passengers find you at the curb.'
+                            : 'Optional — you can skip and add a vehicle later from the driver menu.',
                         style: tt.bodyMedium?.copyWith(height: 1.4),
                       ),
                       const SizedBox(height: 22),
@@ -205,7 +211,7 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
                         label: 'Model',
                         controller: _modelController,
                         prefixIcon: Icons.directions_car_outlined,
-                        required: true,
+                        required: widget.fromDashboard,
                       ),
                       const SizedBox(height: 14),
                       TextField(
@@ -222,9 +228,11 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
                           fontWeight: FontWeight.w800,
                           letterSpacing: 1.4,
                         ),
-                        decoration: const InputDecoration(
-                          labelText: 'Number plate *',
-                          prefixIcon: Icon(Icons.pin_outlined),
+                        decoration: InputDecoration(
+                          labelText: widget.fromDashboard
+                              ? 'Number plate *'
+                              : 'Number plate',
+                          prefixIcon: const Icon(Icons.pin_outlined),
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -262,12 +270,34 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(22, 8, 22, 20),
-              child: AppButton(
-                label: 'Save vehicle',
-                icon: Icons.arrow_forward_rounded,
-                isLoading: _loading,
-                onPressed: _save,
-              ),
+              child: widget.fromDashboard
+                  ? AppButton(
+                      label: 'Save vehicle',
+                      icon: Icons.arrow_forward_rounded,
+                      isLoading: _loading,
+                      onPressed: _save,
+                    )
+                  : Row(
+                      children: [
+                        Expanded(
+                          child: AppButton(
+                            label: 'Skip',
+                            variant: AppButtonVariant.ghost,
+                            onPressed: _loading ? null : _skip,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          flex: 2,
+                          child: AppButton(
+                            label: 'Save vehicle',
+                            icon: Icons.arrow_forward_rounded,
+                            isLoading: _loading,
+                            onPressed: _save,
+                          ),
+                        ),
+                      ],
+                    ),
             ),
           ],
         ),

@@ -168,7 +168,9 @@ class ApiClient {
     return p.contains('/auth/otp') ||
         p.contains('/auth/regions') ||
         p.contains('/auth/refresh') ||
-        p.contains('/auth/logout');
+        p.contains('/auth/logout') ||
+        p.contains('/fleet/companies') ||
+        p.contains('/fleet/cities');
   }
 
   bool _looksLikeAuthFailure(Response response) {

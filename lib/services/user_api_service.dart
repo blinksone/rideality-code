@@ -189,4 +189,20 @@ class UserApiService {
       },
     );
   }
+
+  Future<void> reportUser({
+    required String reportedUserId,
+    required String reason,
+    String? description,
+    String? rideId,
+  }) async {
+    final body = <String, dynamic>{'reason': reason};
+    if (description != null && description.trim().isNotEmpty) {
+      body['description'] = description.trim();
+    }
+    if (rideId != null && rideId.isNotEmpty) {
+      body['rideId'] = rideId;
+    }
+    await _client.post('/users/$reportedUserId/report', body: body);
+  }
 }

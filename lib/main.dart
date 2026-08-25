@@ -1,8 +1,10 @@
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'core/api/api_session.dart';
 import 'core/navigation/app_navigator.dart';
+import 'core/storage/active_trip_store.dart';
 import 'core/storage/token_storage.dart';
 import 'models/api_models.dart';
 import 'models/phone_verification_args.dart';
@@ -11,6 +13,7 @@ import 'screens/driver/become_driver_screen.dart';
 import 'screens/driver/chat_thread_screen.dart';
 import 'screens/driver/documents_upload_screen.dart';
 import 'screens/driver/driver_dashboard_screen.dart';
+import 'screens/driver/selfie_verification_screen.dart';
 import 'screens/driver/under_review_screen.dart';
 import 'screens/driver/update_profile_screen.dart';
 import 'screens/driver/vehicle_details_screen.dart';
@@ -21,19 +24,36 @@ import 'screens/passenger/otp_verification_screen.dart';
 import 'screens/passenger/passenger_dashboard_screen.dart';
 import 'screens/passenger/personal_info_screen.dart';
 import 'screens/passenger/phone_number_screen.dart';
+import 'screens/passenger/rides_destination_screen.dart';
+import 'screens/passenger/ride_confirm_screen.dart';
+import 'screens/passenger/cargo_details_screen.dart';
 import 'screens/passenger/save_location_screen.dart';
 import 'screens/passenger/session_bootstrap_screen.dart';
 import 'screens/passenger/welcome_screen.dart';
+import 'screens/shared/active_ride_screen.dart';
+import 'screens/driver/cargo_proof_screen.dart';
+import 'services/driver_location_tracker.dart';
+import 'services/fcm_background_handler.dart';
+import 'services/firebase_bootstrap.dart';
+import 'services/realtime_socket_service.dart';
 import 'theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Must be top-level + registered before runApp.
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
   // Register Manrope/Inter with the font loader so ThemeData is never Roboto.
   GoogleFonts.config.allowRuntimeFetching = true;
   GoogleFonts.manrope();
   GoogleFonts.inter();
 
+  await FirebaseBootstrap.initialize();
+
   ApiSession.onSessionExpired = () async {
+    await DriverLocationTracker.instance.stop();
+    await RealtimeSocketService.instance.disconnect();
+    await ActiveTripStore.instance.clear();
     await TokenStorage.instance.clear();
     // Let the current frame finish, then clear the stack to welcome.
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -101,6 +121,38 @@ class RidealityApp extends StatelessWidget {
             return MaterialPageRoute(
               builder: (_) => const NotificationsScreen(),
             );
+          case RidesDestinationScreen.routeName:
+            final ridesArgs = settings.arguments is RidesDestinationArgs
+                ? settings.arguments as RidesDestinationArgs
+                : const RidesDestinationArgs(places: []);
+            return MaterialPageRoute(
+              builder: (_) => RidesDestinationScreen(
+                places: ridesArgs.places,
+                canBook: ridesArgs.canBook,
+                initialDestination: ridesArgs.initialDestination,
+                vehicleType: ridesArgs.vehicleType,
+              ),
+            );
+          case RideConfirmScreen.routeName:
+            final confirmArgs = settings.arguments;
+            if (confirmArgs is RideConfirmArgs) {
+              return MaterialPageRoute(
+                builder: (_) => RideConfirmScreen(args: confirmArgs),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (_) => const SessionBootstrapScreen(),
+            );
+          case CargoDetailsScreen.routeName:
+            final cargoArgs = settings.arguments;
+            if (cargoArgs is CargoDetailsArgs) {
+              return MaterialPageRoute(
+                builder: (_) => CargoDetailsScreen(args: cargoArgs),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (_) => const SessionBootstrapScreen(),
+            );
           case PassengerDashboardScreen.routeName:
             final tab = settings.arguments is int
                 ? settings.arguments as int
@@ -114,8 +166,11 @@ class RidealityApp extends StatelessWidget {
               builder: (_) => const PassengerDashboardScreen(),
             );
           case BecomeDriverScreen.routeName:
+            final countryId = settings.arguments is String
+                ? settings.arguments as String
+                : null;
             return MaterialPageRoute(
-              builder: (_) => const BecomeDriverScreen(),
+              builder: (_) => BecomeDriverScreen(countryRegionId: countryId),
             );
           case VehicleDetailsScreen.routeName:
             final fromDash = settings.arguments == true;
@@ -126,6 +181,10 @@ class RidealityApp extends StatelessWidget {
           case DocumentsUploadScreen.routeName:
             return MaterialPageRoute(
               builder: (_) => const DocumentsUploadScreen(),
+            );
+          case SelfieVerificationScreen.routeName:
+            return MaterialPageRoute(
+              builder: (_) => const SelfieVerificationScreen(),
             );
           case UnderReviewScreen.routeName:
             return MaterialPageRoute(
@@ -155,6 +214,30 @@ class RidealityApp extends StatelessWidget {
           case DriverDashboardScreen.routeName:
             return MaterialPageRoute(
               builder: (_) => const DriverDashboardScreen(),
+            );
+          case ActiveRideScreen.routeName:
+            final args = settings.arguments;
+            if (args is ActiveRideArgs) {
+              return MaterialPageRoute(
+                builder: (_) => ActiveRideScreen(
+                  tripId: args.tripId,
+                  role: args.role,
+                  initialTrip: args.initialTrip,
+                ),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (_) => const SessionBootstrapScreen(),
+            );
+          case CargoProofScreen.routeName:
+            final proofArgs = settings.arguments;
+            if (proofArgs is CargoProofArgs) {
+              return MaterialPageRoute(
+                builder: (_) => CargoProofScreen(args: proofArgs),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (_) => const SessionBootstrapScreen(),
             );
           default:
             return MaterialPageRoute(

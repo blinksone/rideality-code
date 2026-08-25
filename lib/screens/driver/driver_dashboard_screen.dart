@@ -14,6 +14,7 @@ import '../../widgets/network_avatar.dart';
 import '../passenger/notifications_screen.dart';
 import '../passenger/welcome_screen.dart';
 import 'chat_inbox_tab.dart';
+import 'documents_upload_screen.dart';
 import 'driver_online_map_screen.dart';
 import 'under_review_screen.dart';
 import 'update_profile_screen.dart';
@@ -44,6 +45,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   UserProfile? _me;
   DriverView _driver = DriverView.empty;
+  OnboardingStatus _onboarding = OnboardingStatus.empty;
   WalletInfo _wallet = WalletInfo.empty;
   List<RideSummary> _rides = const [];
   bool _canDrive = false;
@@ -62,28 +64,30 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       _error = null;
     });
     try {
-      final results = await Future.wait([
-        UserApiService.instance.getMe(),
-        UserApiService.instance.getOnboarding(),
-        UserApiService.instance.getWallet(),
-        UserApiService.instance.listMyRides(limit: 50),
-      ]);
-      final me = results[0] as UserProfile;
-      final onboarding = results[1] as OnboardingStatus;
-      final wallet = results[2] as WalletInfo;
-      final rides = results[3] as List<RideSummary>;
+      final me = await UserApiService.instance.getMe();
+      final onboarding = await UserApiService.instance.getOnboarding();
+
+      WalletInfo wallet = WalletInfo.empty;
+      try {
+        wallet = await UserApiService.instance.getWallet();
+      } catch (_) {}
+
+      List<RideSummary> rides = const [];
+      try {
+        rides = await UserApiService.instance.listMyRides(limit: 50);
+      } catch (_) {}
 
       DriverView driver = DriverView.empty;
       try {
         driver = await DriverApiService.instance.getDriverView();
       } on ApiException catch (e) {
         if (e.statusCode != 404 && e.code != 'NOT_FOUND') rethrow;
+      } catch (_) {
+        // Malformed driver payload — dashboard still usable with empty driver.
       }
 
-      final canDrive = me.canDrive ||
-          onboarding.canDrive ||
-          onboarding.driverApproved ||
-          driver.isApproved;
+      final canDrive = driver.isApproved &&
+          !onboarding.pendingSteps.contains('driver_approved');
 
       if (canDrive && me.activeMode?.toLowerCase() != 'driver') {
         try {
@@ -95,6 +99,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
       setState(() {
         _me = me;
         _driver = driver;
+        _onboarding = onboarding;
         _wallet = wallet;
         _rides = rides;
         _canDrive = canDrive;
@@ -106,10 +111,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         _error = e.message;
         _loading = false;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Could not load driver dashboard';
+        _error = e is ApiException
+            ? e.message
+            : 'Could not load driver dashboard';
         _loading = false;
       });
     }
@@ -175,9 +182,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   void _onMapDriverUpdated(DriverView driver) {
     setState(() => _driver = driver);
-    if (!driver.isOnline) {
-      _toast('You\'re offline');
-    }
   }
 
   void _toast(String msg) {
@@ -612,6 +616,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             _DriverMenuTab(
               me: me,
               driver: _driver,
+              onboarding: _onboarding,
               canDrive: _canDrive,
               onProfile: _openProfile,
               onVehicles: _openVehicles,
@@ -620,8 +625,15 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               onHelp: _openHelp,
               onRatings: _openRatings,
               onSettings: _openSettings,
-              onApplicationStatus: () {
-                Navigator.of(context).pushNamed(UnderReviewScreen.routeName);
+              onDocuments: () async {
+                final needsUpload = !_onboarding.documentsUploaded ||
+                    _onboarding.documentsNeedReupload;
+                await Navigator.of(context).pushNamed(
+                  needsUpload
+                      ? DocumentsUploadScreen.routeName
+                      : UnderReviewScreen.routeName,
+                );
+                if (mounted) await _bootstrap();
               },
               onLogout: _confirmLogout,
               onNotifications: _openNotifications,
@@ -673,26 +685,37 @@ class _MenuListItem extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
+    this.subtitle,
+    this.accent,
   });
 
   final IconData icon;
   final String label;
+  final String? subtitle;
+  final Color? accent;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 4),
       leading: CircleAvatar(
         backgroundColor: AppColors.surfaceTint,
-        child: Icon(icon, color: AppColors.secondary, size: 22),
+        child: Icon(icon, color: accent ?? AppColors.secondary, size: 22),
       ),
       title: Text(
         label,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              fontWeight: FontWeight.w500,
-            ),
+        style: tt.labelLarge?.copyWith(fontWeight: FontWeight.w500),
       ),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle!,
+              style: tt.bodySmall?.copyWith(
+                color: accent ?? AppColors.onSurfaceVariant,
+              ),
+            ),
       trailing: const Icon(
         Icons.chevron_right_rounded,
         color: AppColors.onSurfaceVariant,
@@ -759,6 +782,7 @@ class _DriverMenuTab extends StatelessWidget {
   const _DriverMenuTab({
     required this.me,
     required this.driver,
+    required this.onboarding,
     required this.canDrive,
     required this.onProfile,
     required this.onVehicles,
@@ -767,13 +791,14 @@ class _DriverMenuTab extends StatelessWidget {
     required this.onHelp,
     required this.onRatings,
     required this.onSettings,
-    required this.onApplicationStatus,
+    required this.onDocuments,
     required this.onLogout,
     required this.onNotifications,
   });
 
   final UserProfile me;
   final DriverView driver;
+  final OnboardingStatus onboarding;
   final bool canDrive;
   final VoidCallback onProfile;
   final VoidCallback onVehicles;
@@ -782,14 +807,22 @@ class _DriverMenuTab extends StatelessWidget {
   final VoidCallback onHelp;
   final VoidCallback onRatings;
   final VoidCallback onSettings;
-  final VoidCallback onApplicationStatus;
+  final VoidCallback onDocuments;
   final VoidCallback onLogout;
   final VoidCallback onNotifications;
+
+  Color? get _docsAccent {
+    if (onboarding.documentsApproved) return AppColors.success;
+    if (onboarding.documentsNeedReupload) return AppColors.error;
+    if (onboarding.documentsPendingReview) return AppColors.amber;
+    return AppColors.secondary;
+  }
 
   @override
   Widget build(BuildContext context) {
     final name = me.fullName ?? 'Driver';
     final tt = Theme.of(context).textTheme;
+    final showDocsBanner = !onboarding.documentsApproved;
 
     return SafeArea(
       bottom: false,
@@ -838,6 +871,42 @@ class _DriverMenuTab extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(me.phone, style: tt.bodySmall),
+                      FutureBuilder<String?>(
+                        future: DashboardPrefs.instance.fleetCompanyName,
+                        builder: (context, snap) {
+                          final company = snap.data;
+                          return FutureBuilder<String?>(
+                            future: DashboardPrefs.instance.fleetCityName,
+                            builder: (context, citySnap) {
+                              final city = citySnap.data;
+                              if ((company == null || company.isEmpty) &&
+                                  (city == null || city.isEmpty)) {
+                                if (driver.driverType == 'fleet_assigned') {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      'Fleet driver',
+                                      style: tt.labelSmall,
+                                    ),
+                                  );
+                                }
+                                return const SizedBox.shrink();
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  [
+                                    if (company != null && company.isNotEmpty)
+                                      company,
+                                    if (city != null && city.isNotEmpty) city,
+                                  ].join(' · '),
+                                  style: tt.labelSmall,
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
                       if (driver.totalRides > 0) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -851,11 +920,65 @@ class _DriverMenuTab extends StatelessWidget {
               ],
             ),
           ),
+          if (showDocsBanner) ...[
+            const SizedBox(height: 12),
+            Material(
+              color: (_docsAccent ?? AppColors.secondary).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(14),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onDocuments,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Icon(
+                        onboarding.documentsNeedReupload
+                            ? Icons.warning_amber_rounded
+                            : Icons.description_outlined,
+                        color: _docsAccent,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Documents',
+                              style: tt.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              onboarding.documentStatusLabel,
+                              style: tt.bodySmall?.copyWith(color: _docsAccent),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: _docsAccent,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           _MenuListItem(
             icon: Icons.person_outline_rounded,
             label: 'Profile',
             onTap: onProfile,
+          ),
+          _MenuListItem(
+            icon: Icons.description_outlined,
+            label: 'Documents',
+            subtitle: onboarding.documentStatusLabel,
+            accent: _docsAccent,
+            onTap: onDocuments,
           ),
           _MenuListItem(
             icon: Icons.directions_car_outlined,
@@ -891,7 +1014,7 @@ class _DriverMenuTab extends StatelessWidget {
             _MenuListItem(
               icon: Icons.fact_check_outlined,
               label: 'Application status',
-              onTap: onApplicationStatus,
+              onTap: onDocuments,
             ),
           const Divider(height: 28),
           _MenuListItem(

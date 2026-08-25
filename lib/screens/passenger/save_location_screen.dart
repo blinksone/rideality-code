@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../services/driver_location_tracker.dart';
 import '../../services/user_api_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/app_button.dart';
@@ -22,10 +23,11 @@ class SaveLocationScreen extends StatefulWidget {
 
 class _SaveLocationScreenState extends State<SaveLocationScreen> {
   final _addressController = TextEditingController();
-  final _latController = TextEditingController(text: '31.5204');
-  final _lngController = TextEditingController(text: '74.3587');
   String _label = 'home';
   bool _loading = false;
+  bool _locating = false;
+  double? _lat;
+  double? _lng;
 
   static const _labels = [
     ('home', Icons.home_rounded),
@@ -35,10 +37,14 @@ class _SaveLocationScreenState extends State<SaveLocationScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _fetchCurrentLocation(silent: true);
+  }
+
+  @override
   void dispose() {
     _addressController.dispose();
-    _latController.dispose();
-    _lngController.dispose();
     super.dispose();
   }
 
@@ -53,14 +59,44 @@ class _SaveLocationScreenState extends State<SaveLocationScreen> {
     );
   }
 
+  Future<void> _fetchCurrentLocation({bool silent = false}) async {
+    setState(() => _locating = true);
+    try {
+      final pos = await DriverLocationTracker.instance.currentPosition();
+      if (!mounted) return;
+      if (pos == null) {
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Turn on location and allow access to save this place.'),
+            ),
+          );
+        }
+        return;
+      }
+      setState(() {
+        _lat = pos.latitude;
+        _lng = pos.longitude;
+        if (_addressController.text.trim().isEmpty) {
+          _addressController.text =
+              '${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)}';
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
   Future<void> _save() async {
     final address = _addressController.text.trim();
-    final lat = double.tryParse(_latController.text.trim());
-    final lng = double.tryParse(_lngController.text.trim());
+    final lat = _lat;
+    final lng = _lng;
 
     if (address.isEmpty || lat == null || lng == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Address and coordinates are required')),
+        const SnackBar(
+          content: Text('Add an address and tap Use current location'),
+        ),
       );
       return;
     }
@@ -168,35 +204,26 @@ class _SaveLocationScreenState extends State<SaveLocationScreen> {
                       prefixIcon: Icons.location_on_outlined,
                     ),
                     const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: AppTextField(
-                            label: 'Latitude',
-                            controller: _latController,
-                            keyboardType:
-                                const TextInputType.numberWithOptions(
-                              decimal: true,
-                              signed: true,
-                            ),
-                            required: true,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: AppTextField(
-                            label: 'Longitude',
-                            controller: _lngController,
-                            keyboardType:
-                                const TextInputType.numberWithOptions(
-                              decimal: true,
-                              signed: true,
-                            ),
-                            required: true,
-                          ),
-                        ),
-                      ],
+                    AppButton(
+                      label: _lat == null
+                          ? 'Use current location'
+                          : 'Update current location',
+                      icon: Icons.my_location_rounded,
+                      variant: AppButtonVariant.secondary,
+                      isLoading: _locating,
+                      borderRadius: 14,
+                      onPressed: _locating ? null : _fetchCurrentLocation,
                     ),
+                    if (_lat != null && _lng != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Location set · ${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)}',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: AppColors.success,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ],
                   ],
                 ),
               ),

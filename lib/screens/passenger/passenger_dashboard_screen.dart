@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api/api_exception.dart';
@@ -45,6 +46,15 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
     _bootstrap();
   }
 
+  Future<T?> _soft<T>(Future<T> Function() run, String label) async {
+    try {
+      return await run();
+    } catch (e, st) {
+      debugPrint('[Dashboard] $label failed: $e\n$st');
+      return null;
+    }
+  }
+
   Future<void> _bootstrap() async {
     setState(() {
       _loading = true;
@@ -52,23 +62,26 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
     });
     try {
       final prefs = DashboardPrefs.instance;
-      final results = await Future.wait([
-        UserApiService.instance.getMe(),
-        UserApiService.instance.getPassengerView(),
-        UserApiService.instance.getWallet(),
-        UserApiService.instance.listMyRides(limit: 20),
-        UserApiService.instance.getOnboarding(),
-        prefs.isProfileBannerHidden,
-        prefs.isPromoBannerHidden,
-      ]);
+
+      // Required for home — fail the screen only if these fail.
+      final me = await UserApiService.instance.getMe();
+      final passenger = await UserApiService.instance.getPassengerView();
+      final onboarding = await UserApiService.instance.getOnboarding();
+
+      // Optional — don't block the whole dashboard.
+      final wallet = await _soft(
+        () => UserApiService.instance.getWallet(),
+        'wallet',
+      );
+      final rides = await _soft(
+        () => UserApiService.instance.listMyRides(limit: 20),
+        'rides',
+      );
+      final hideProfile =
+          await prefs.isProfileBannerHidden;
+      final hidePromo = await prefs.isPromoBannerHidden;
+
       if (!mounted) return;
-      final me = results[0] as UserProfile;
-      final passenger = results[1] as PassengerView;
-      final wallet = results[2] as WalletInfo;
-      final rides = results[3] as List<RideSummary>;
-      final onboarding = results[4] as OnboardingStatus;
-      final hideProfile = results[5] as bool;
-      final hidePromo = results[6] as bool;
 
       final needsEmail = me.email == null || me.email!.isEmpty;
       final needsPlace = !onboarding.locationsSaved &&
@@ -80,10 +93,11 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
       setState(() {
         _profile = me;
         _passenger = passenger;
-        _wallet = wallet.balance > 0 || wallet.id.isNotEmpty
+        _wallet = (wallet != null &&
+                (wallet.balance > 0 || wallet.id.isNotEmpty))
             ? wallet
             : passenger.wallet;
-        _rides = rides;
+        _rides = rides ?? const [];
         _onboarding = onboarding;
         _hideProfileBanner = hideProfile;
         _hidePromoBanner = hidePromo;
@@ -102,16 +116,20 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
           _openCompleteProfile();
         });
       }
-    } on ApiException catch (e) {
+    } on ApiException catch (e, st) {
+      debugPrint('[Dashboard] bootstrap ApiException: $e\n$st');
       if (!mounted) return;
       setState(() {
         _error = e.message;
         _loading = false;
       });
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[Dashboard] bootstrap error: $e\n$st');
       if (!mounted) return;
       setState(() {
-        _error = 'Could not load dashboard';
+        _error = e.toString().isNotEmpty
+            ? e.toString()
+            : 'Could not load dashboard';
         _loading = false;
       });
     }

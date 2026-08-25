@@ -1,6 +1,10 @@
 abstract final class ApiConfig {
   static const String baseHost = 'http://65.21.177.122:3000';
   static const String baseUrl = '$baseHost/api/v1';
+
+  /// Socket.IO host (path `/socket.io`). Defaults to same machine, port 3100.
+  static const String wsHost = 'http://65.21.177.122:3100';
+
   static const Duration timeout = Duration(seconds: 30);
 
   /// Turns API-relative media paths into absolute URLs.

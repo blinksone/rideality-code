@@ -2,19 +2,26 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../../core/api/api_config.dart';
 import '../../core/api/api_exception.dart';
 import '../../core/storage/token_storage.dart';
 import '../../models/api_models.dart';
+import '../../models/trip_models.dart';
 import '../../services/driver_api_service.dart';
+import '../../services/driver_location_tracker.dart';
+import '../../services/realtime_socket_service.dart';
+import '../../services/trips_api_service.dart';
 import '../../theme/app_colors.dart';
-import '../../core/api/api_config.dart';
 import '../../widgets/app_button.dart';
+import '../../widgets/rideality_trip_map.dart';
 import '../passenger/notifications_screen.dart';
+import '../shared/active_ride_screen.dart';
 import 'under_review_screen.dart';
 
-/// Online mode — map + ride request offers.
-/// When [embedded] is true, renders inside the driver dashboard (no route push).
+/// Online mode — map + live Socket.IO ride offers.
 class DriverOnlineMapScreen extends StatefulWidget {
   const DriverOnlineMapScreen({
     super.key,
@@ -30,17 +37,9 @@ class DriverOnlineMapScreen extends StatefulWidget {
   final DriverView driver;
   final UserProfile me;
   final WalletInfo wallet;
-
-  /// When false, go-online navigates to verification instead.
   final bool canDrive;
-
-  /// Hosted inside [DriverDashboardScreen] instead of a pushed route.
   final bool embedded;
-
-  /// Notifies parent of availability / driver view changes.
   final ValueChanged<DriverView>? onDriverUpdated;
-
-  /// Map header — open dashboard menu (embedded) or pop.
   final VoidCallback? onOpenDashboard;
 
   @override
@@ -49,48 +48,201 @@ class DriverOnlineMapScreen extends StatefulWidget {
 
 class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
   late DriverView _driver;
-  _RideOffer? _offer;
-  Timer? _offerTimer;
+  late List<DriverServiceMode> _serviceModes;
+  DispatchOffer? _offer;
   bool _toggling = false;
+  bool _responding = false;
+  bool _savingModes = false;
+  StreamSubscription<DispatchOffer>? _offerSub;
+  StreamSubscription<bool>? _connSub;
+  StreamSubscription<Position>? _posSub;
+
+  double? _driverLat;
+  double? _driverLng;
+
+  final _socket = RealtimeSocketService.instance;
+  final _location = DriverLocationTracker.instance;
+  final _trips = TripsApiService.instance;
 
   @override
   void initState() {
     super.initState();
     _driver = widget.driver;
-    _scheduleOffer();
+    _serviceModes = List<DriverServiceMode>.from(
+      _driver.serviceModes.isEmpty
+          ? const [DriverServiceMode.rides]
+          : _driver.serviceModes,
+    );
+    if (_driver.isOnline) {
+      unawaited(_goLiveStack());
+    }
   }
 
   @override
   void didUpdateWidget(covariant DriverOnlineMapScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.driver.isOnline != widget.driver.isOnline ||
-        oldWidget.wallet.balance != widget.wallet.balance) {
+        oldWidget.wallet.balance != widget.wallet.balance ||
+        oldWidget.driver.serviceModes != widget.driver.serviceModes) {
       _driver = widget.driver;
+      if (widget.driver.serviceModes.isNotEmpty) {
+        _serviceModes = List<DriverServiceMode>.from(widget.driver.serviceModes);
+      }
       if (_driver.isOnline) {
-        _scheduleOffer();
+        unawaited(_goLiveStack());
       } else {
-        _offerTimer?.cancel();
-        _offer = null;
+        unawaited(_tearDownLive());
+        setState(() => _offer = null);
       }
     }
   }
 
   @override
   void dispose() {
-    _offerTimer?.cancel();
+    unawaited(_offerSub?.cancel());
+    unawaited(_connSub?.cancel());
+    unawaited(_posSub?.cancel());
     super.dispose();
   }
 
-  void _scheduleOffer() {
-    _offerTimer?.cancel();
-    if (!_driver.isOnline) {
-      setState(() => _offer = null);
-      return;
+  String get _vehicleType {
+    final raw = widget.driver.vehicleType;
+    if (raw == null || raw.toString().isEmpty) return 'sedan';
+    return raw.toString().toLowerCase();
+  }
+
+  List<String> get _modesApi => DriverServiceMode.toApiList(_serviceModes);
+
+  Future<void> _startMapLocationWatch() async {
+    await _posSub?.cancel();
+    final pos = await _location.currentPosition();
+    if (pos != null && mounted) {
+      setState(() {
+        _driverLat = pos.latitude;
+        _driverLng = pos.longitude;
+      });
     }
-    _offerTimer = Timer(const Duration(seconds: 2), () {
-      if (!mounted || !_driver.isOnline) return;
-      setState(() => _offer ??= _RideOffer.demo());
+    _posSub = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 20,
+      ),
+    ).listen((p) {
+      if (!mounted) return;
+      setState(() {
+        _driverLat = p.latitude;
+        _driverLng = p.longitude;
+      });
     });
+  }
+
+  Future<void> _stopMapLocationWatch() async {
+    await _posSub?.cancel();
+    _posSub = null;
+  }
+
+  Future<void> _goLiveStack() async {
+    await _offerSub?.cancel();
+    await _connSub?.cancel();
+    try {
+      await _socket.connectAsDriver(
+        vehicleType: _vehicleType,
+        serviceModes: _modesApi,
+      );
+      try {
+        await _location.start(
+          vehicleType: _vehicleType,
+          serviceModes: _modesApi,
+        );
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Location permission needed to receive nearby requests.',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+      unawaited(_startMapLocationWatch());
+      _offerSub = _socket.dispatchOffers.listen((offer) {
+        if (!mounted || !_driver.isOnline) return;
+        setState(() => _offer = offer);
+      });
+      _connSub = _socket.connectionChanges.listen((ok) {
+        if (ok && _driver.isOnline) {
+          unawaited(
+            _socket.connectAsDriver(
+              vehicleType: _vehicleType,
+              serviceModes: _modesApi,
+            ),
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Realtime connect failed: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _tearDownLive() async {
+    await _offerSub?.cancel();
+    _offerSub = null;
+    await _connSub?.cancel();
+    _connSub = null;
+    await _stopMapLocationWatch();
+    await _location.stop();
+  }
+
+  Future<void> _setServiceModeSelection(List<DriverServiceMode> next) async {
+    if (next.isEmpty || _savingModes) return;
+    setState(() {
+      _serviceModes = next;
+      _savingModes = true;
+    });
+    try {
+      final updated = await DriverApiService.instance.setServiceModes(next);
+      if (!mounted) return;
+      final modes = updated.serviceModes.isNotEmpty
+          ? updated.serviceModes
+          : next;
+      setState(() {
+        _driver = updated.copyWith(serviceModes: modes);
+        _serviceModes = List<DriverServiceMode>.from(modes);
+        _savingModes = false;
+      });
+      widget.onDriverUpdated?.call(_driver);
+      _location.updateServiceModes(DriverServiceMode.toApiList(modes));
+      if (_driver.isOnline) {
+        await _socket.updateSession(
+          vehicleType: _vehicleType,
+          role: SessionRole.driver,
+          serviceModes: DriverServiceMode.toApiList(modes),
+        );
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _savingModes = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), behavior: SnackBarBehavior.floating),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingModes = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not update service modes: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   Future<void> _toggleOnline() async {
@@ -99,7 +251,7 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
     if (goOnline && !widget.canDrive) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Finish verification before going online.'),
+          content: Text('Finish verification before going online. Waiting for your city fleet to approve you.'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -111,21 +263,30 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
     try {
       final updated = await DriverApiService.instance.setAvailability(
         isOnline: goOnline,
+        modes: goOnline ? _serviceModes : null,
       );
       if (!mounted) return;
       setState(() {
-        _driver = updated;
+        _driver = updated.copyWith(
+          serviceModes: updated.serviceModes.isNotEmpty
+              ? updated.serviceModes
+              : _serviceModes,
+        );
+        if (updated.serviceModes.isNotEmpty) {
+          _serviceModes = List<DriverServiceMode>.from(updated.serviceModes);
+        }
         _toggling = false;
         if (!goOnline) _offer = null;
       });
       if (goOnline) {
-        _scheduleOffer();
+        await _goLiveStack();
       } else {
-        _offerTimer?.cancel();
+        await _tearDownLive();
       }
-      widget.onDriverUpdated?.call(updated);
+      if (!mounted) return;
+      widget.onDriverUpdated?.call(_driver);
       if (!widget.embedded && !goOnline) {
-        Navigator.of(context).pop(updated);
+        Navigator.of(context).pop(_driver);
       }
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -136,31 +297,73 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
     }
   }
 
-  void _decline() {
-    setState(() => _offer = null);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Request declined'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-    _offerTimer?.cancel();
-    _offerTimer = Timer(const Duration(seconds: 8), () {
-      if (!mounted || !_driver.isOnline) return;
-      setState(() => _offer = _RideOffer.demo(variant: 1));
+  Future<void> _decline() async {
+    final o = _offer;
+    if (o == null || _responding) return;
+    setState(() {
+      _responding = true;
+      _offer = null;
     });
+    try {
+      _socket.emitDispatchResponse(rideId: o.rideId, accepted: false);
+      try {
+        await _trips.dispatchResponse(o.rideId, accepted: false);
+      } catch (_) {}
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Request declined'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _responding = false);
+    }
   }
 
-  void _accept() {
+  Future<void> _accept() async {
     final o = _offer;
-    setState(() => _offer = null);
-    if (o == null) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Ride accepted · heading to ${o.pickup}'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    if (o == null || _responding) return;
+    setState(() {
+      _responding = true;
+      _offer = null;
+    });
+    try {
+      // Prefer socket. REST is fallback only (avoids double ack / double join).
+      _socket.emitDispatchResponse(rideId: o.rideId, accepted: true);
+      if (!_socket.isConnected) {
+        try {
+          await _trips.dispatchResponse(o.rideId, accepted: true);
+          _socket.joinRide(o.rideId);
+        } catch (_) {}
+      }
+      await _socket.updateSession(
+        rideId: o.rideId,
+        role: SessionRole.driver,
+        vehicleType: _vehicleType,
+        serviceModes: _modesApi,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            o.isCargo
+                ? 'Cargo accepted · heading to pickup'
+                : 'Ride accepted · heading to ${o.riderName ?? 'pickup'}',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      await Navigator.of(context).pushNamed(
+        ActiveRideScreen.routeName,
+        arguments: ActiveRideArgs(
+          tripId: o.rideId,
+          role: SessionRole.driver,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _responding = false);
+    }
   }
 
   String get _earningsLabel {
@@ -179,7 +382,16 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
     final content = Stack(
       fit: StackFit.expand,
       children: [
-        const _DriverMapBackdrop(),
+        RidealityTripMap(
+          live: _driverLat != null && _driverLng != null
+              ? LatLng(_driverLat!, _driverLng!)
+              : null,
+          pickup: _offer != null
+              ? LatLng(_offer!.pickupLat, _offer!.pickupLng)
+              : null,
+          myLocationEnabled: _driver.isOnline,
+          bottomGradient: false,
+        ),
         SafeArea(
           bottom: false,
           child: Padding(
@@ -260,6 +472,12 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
+                _ServiceModeSegment(
+                  modes: _serviceModes,
+                  enabled: !_savingModes && !_toggling,
+                  onChanged: _setServiceModeSelection,
+                ),
+                const SizedBox(height: 12),
                 Material(
                   color: _driver.isOnline
                       ? AppColors.successSoft
@@ -280,9 +498,7 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
                             const SizedBox(
                               width: 14,
                               height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                              ),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           else
                             Container(
@@ -317,20 +533,11 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
             ),
           ),
         ),
-        const Positioned(
-          left: 0,
-          right: 0,
-          top: 0,
-          bottom: 180,
-          child: IgnorePointer(child: Center(child: _MapPins())),
-        ),
         Align(
           alignment: Alignment.bottomCenter,
           child: _offer != null
               ? _RideRequestCard(
-                  key: ValueKey(
-                    '${_offer!.passengerName}_${_offer!.fareLabel}',
-                  ),
+                  key: ValueKey(_offer!.rideId),
                   offer: _offer!,
                   onAccept: _accept,
                   onDecline: _decline,
@@ -341,9 +548,8 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
                   toggling: _toggling,
                   onToggleOnline: _toggleOnline,
                   onOpenReview: () {
-                    Navigator.of(context).pushNamed(
-                      UnderReviewScreen.routeName,
-                    );
+                    Navigator.of(context)
+                        .pushNamed(UnderReviewScreen.routeName);
                   },
                 ),
         ),
@@ -361,50 +567,6 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
   }
 }
 
-class _RideOffer {
-  const _RideOffer({
-    required this.fareLabel,
-    required this.vehicleClass,
-    required this.etaMinutes,
-    required this.passengerName,
-    required this.rating,
-    required this.pickup,
-    required this.dropoff,
-  });
-
-  final String fareLabel;
-  final String vehicleClass;
-  final int etaMinutes;
-  final String passengerName;
-  final double rating;
-  final String pickup;
-  final String dropoff;
-
-  factory _RideOffer.demo({int variant = 0}) {
-    if (variant == 1) {
-      return const _RideOffer(
-        fareLabel: 'Rs. 480',
-        vehicleClass: 'GO',
-        etaMinutes: 5,
-        passengerName: 'Hassan K.',
-        rating: 4.6,
-        pickup: 'Gulberg III',
-        dropoff: 'Johar Town',
-      );
-    }
-    return const _RideOffer(
-      fareLabel: 'Rs. 650',
-      vehicleClass: 'RIDEX',
-      etaMinutes: 3,
-      passengerName: 'Amara J.',
-      rating: 4.8,
-      pickup: 'Liberty Market',
-      dropoff: 'DHA Phase 5',
-    );
-  }
-}
-
-/// Incoming ride request card + response countdown (15s).
 class _RideRequestCard extends StatefulWidget {
   const _RideRequestCard({
     super.key,
@@ -413,10 +575,9 @@ class _RideRequestCard extends StatefulWidget {
     required this.onDecline,
   });
 
-  static const int respondSeconds = 15;
   static const int warningSeconds = 5;
 
-  final _RideOffer offer;
+  final DispatchOffer offer;
   final VoidCallback onAccept;
   final VoidCallback onDecline;
 
@@ -427,14 +588,16 @@ class _RideRequestCard extends StatefulWidget {
 class _RideRequestCardState extends State<_RideRequestCard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _countdown;
+  late final int _respondSeconds;
   bool _finished = false;
 
   @override
   void initState() {
     super.initState();
+    _respondSeconds = widget.offer.timeoutSeconds;
     _countdown = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: _RideRequestCard.respondSeconds),
+      duration: Duration(seconds: _respondSeconds),
     )..addStatusListener((status) {
         if (status == AnimationStatus.completed && !_finished) {
           _finished = true;
@@ -468,14 +631,16 @@ class _RideRequestCardState extends State<_RideRequestCard>
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
     final offer = widget.offer;
+    final pickupLabel =
+        '${offer.pickupLat.toStringAsFixed(4)}, ${offer.pickupLng.toStringAsFixed(4)}';
 
     return AnimatedBuilder(
       animation: _countdown,
       builder: (context, child) {
         final remainingFraction = 1.0 - _countdown.value;
-        final secondsLeft = (_RideRequestCard.respondSeconds * remainingFraction)
+        final secondsLeft = (_respondSeconds * remainingFraction)
             .ceil()
-            .clamp(0, _RideRequestCard.respondSeconds);
+            .clamp(0, _respondSeconds);
         final urgent = secondsLeft <= _RideRequestCard.warningSeconds;
         final progressColor = urgent ? AppColors.error : AppColors.secondary;
 
@@ -528,7 +693,11 @@ class _RideRequestCardState extends State<_RideRequestCard>
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              urgent ? 'Respond now' : 'New ride request',
+                              urgent
+                                  ? 'Respond now'
+                                  : offer.isCargo
+                                      ? 'New cargo request'
+                                      : 'New ride request',
                               style: tt.labelMedium?.copyWith(
                                 fontWeight: FontWeight.w500,
                                 color: AppColors.onSurfaceVariant,
@@ -568,10 +737,9 @@ class _RideRequestCardState extends State<_RideRequestCard>
                       ),
                       const SizedBox(height: 16),
                       Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           Text(
-                            offer.fareLabel,
+                            offer.fareLabel(),
                             style: tt.headlineMedium?.copyWith(
                               fontWeight: FontWeight.w800,
                             ),
@@ -583,20 +751,50 @@ class _RideRequestCardState extends State<_RideRequestCard>
                               vertical: 6,
                             ),
                             decoration: BoxDecoration(
-                              color: AppColors.surfaceTint,
+                              color: offer.isCargo
+                                  ? AppColors.accentSoft
+                                  : AppColors.surfaceTint,
                               borderRadius: BorderRadius.circular(999),
                             ),
                             child: Text(
-                              offer.vehicleClass,
+                              offer.isCargo ? 'CARGO' : 'RIDE',
                               style: tt.labelMedium?.copyWith(
                                 fontWeight: FontWeight.w800,
-                                color: AppColors.secondary,
+                                color: offer.isCargo
+                                    ? AppColors.accent
+                                    : AppColors.secondary,
                                 letterSpacing: 0.5,
                               ),
                             ),
                           ),
                         ],
                       ),
+                      if (offer.isCargo) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            if (offer.cargoWeightKg != null)
+                              _OfferMetaChip(
+                                icon: Icons.scale_rounded,
+                                label: offer.weightLabel,
+                              ),
+                            if (offer.cargoSizeTier != null &&
+                                offer.cargoSizeTier!.isNotEmpty)
+                              _OfferMetaChip(
+                                icon: Icons.inventory_2_outlined,
+                                label: offer.cargoSizeTier!.toUpperCase(),
+                              ),
+                            if (offer.cargoDescription != null &&
+                                offer.cargoDescription!.isNotEmpty)
+                              _OfferMetaChip(
+                                icon: Icons.notes_rounded,
+                                label: offer.cargoDescription!,
+                              ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 6),
                       Row(
                         children: [
@@ -613,6 +811,17 @@ class _RideRequestCardState extends State<_RideRequestCard>
                               fontWeight: FontWeight.w500,
                             ),
                           ),
+                          if (offer.dropoffDistanceMeters != null &&
+                              offer.dropoffDistanceMeters! > 0) ...[
+                            const SizedBox(width: 12),
+                            Text(
+                              'Trip ${(offer.dropoffDistanceMeters! / 1000).toStringAsFixed(1)} km',
+                              style: tt.labelMedium?.copyWith(
+                                color: AppColors.onSurfaceVariant,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 16),
@@ -624,12 +833,18 @@ class _RideRequestCardState extends State<_RideRequestCard>
                         ),
                         child: Row(
                           children: [
-                            const CircleAvatar(
+                            CircleAvatar(
                               radius: 22,
-                              backgroundColor: AppColors.surfaceTint,
+                              backgroundColor: offer.isCargo
+                                  ? AppColors.accentSoft
+                                  : AppColors.surfaceTint,
                               child: Icon(
-                                Icons.person_rounded,
-                                color: AppColors.secondary,
+                                offer.isCargo
+                                    ? Icons.local_shipping_rounded
+                                    : Icons.person_rounded,
+                                color: offer.isCargo
+                                    ? AppColors.accent
+                                    : AppColors.secondary,
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -638,53 +853,20 @@ class _RideRequestCardState extends State<_RideRequestCard>
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    offer.passengerName,
+                                    offer.riderName ??
+                                        (offer.isCargo
+                                            ? 'Cargo shipper'
+                                            : 'Passenger'),
                                     style: tt.titleSmall?.copyWith(
                                       fontWeight: FontWeight.w800,
                                     ),
                                   ),
                                   const SizedBox(height: 2),
-                                  Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.star_rounded,
-                                        size: 16,
-                                        color: AppColors.amber,
-                                      ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        offer.rating.toStringAsFixed(1),
-                                        style: tt.labelSmall?.copyWith(
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ],
+                                  Text(
+                                    'ID ${offer.rideId}',
+                                    style: tt.labelSmall,
                                   ),
                                 ],
-                              ),
-                            ),
-                            Material(
-                              color: AppColors.surfaceContainerLowest,
-                              shape: const CircleBorder(),
-                              child: InkWell(
-                                customBorder: const CircleBorder(),
-                                onTap: () {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content:
-                                          Text('Chat opens after you accept'),
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                },
-                                child: const SizedBox(
-                                  width: 44,
-                                  height: 44,
-                                  child: Icon(
-                                    Icons.chat_bubble_outline_rounded,
-                                    color: AppColors.onSurfaceVariant,
-                                  ),
-                                ),
                               ),
                             ),
                           ],
@@ -693,8 +875,10 @@ class _RideRequestCardState extends State<_RideRequestCard>
                       const SizedBox(height: 16),
                       _RouteRow(
                         kind: 'PICKUP',
-                        place: offer.pickup,
-                        color: AppColors.secondary,
+                        place: pickupLabel,
+                        color: offer.isCargo
+                            ? AppColors.accent
+                            : AppColors.secondary,
                       ),
                       Padding(
                         padding: const EdgeInsets.only(left: 5),
@@ -706,7 +890,7 @@ class _RideRequestCardState extends State<_RideRequestCard>
                       ),
                       _RouteRow(
                         kind: 'DROP-OFF',
-                        place: offer.dropoff,
+                        place: offer.dropoffLabel ?? 'See trip details',
                         color: AppColors.onSurface,
                       ),
                       const SizedBox(height: 20),
@@ -733,16 +917,6 @@ class _RideRequestCardState extends State<_RideRequestCard>
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Center(
-                        child: Container(
-                          width: 120,
-                          height: 5,
-                          decoration: BoxDecoration(
-                            color: AppColors.secondary.withValues(alpha: 0.85),
-                            borderRadius: BorderRadius.circular(99),
-                          ),
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -751,6 +925,121 @@ class _RideRequestCardState extends State<_RideRequestCard>
           ),
         );
       },
+    );
+  }
+}
+
+class _ServiceModeSegment extends StatelessWidget {
+  const _ServiceModeSegment({
+    required this.modes,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final List<DriverServiceMode> modes;
+  final ValueChanged<List<DriverServiceMode>> onChanged;
+  final bool enabled;
+
+  int get _index {
+    final rides = modes.contains(DriverServiceMode.rides);
+    final cargo = modes.contains(DriverServiceMode.cargo);
+    if (rides && cargo) return 2;
+    if (cargo) return 1;
+    return 0;
+  }
+
+  void _select(int i) {
+    if (!enabled) return;
+    switch (i) {
+      case 1:
+        onChanged(const [DriverServiceMode.cargo]);
+      case 2:
+        onChanged(const [DriverServiceMode.rides, DriverServiceMode.cargo]);
+      default:
+        onChanged(const [DriverServiceMode.rides]);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final labels = const ['Rides', 'Cargo', 'Both'];
+    return Material(
+      color: AppColors.surfaceContainerLowest,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 0,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceContainerLowest,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: AppColors.ambientShadow,
+        ),
+        child: Row(
+          children: List.generate(3, (i) {
+            final selected = _index == i;
+            return Expanded(
+              child: Material(
+                color: selected ? AppColors.accent : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: enabled ? () => _select(i) : null,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Text(
+                      labels[i],
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: selected
+                                ? AppColors.onAccent
+                                : AppColors.onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+  }
+}
+
+class _OfferMetaChip extends StatelessWidget {
+  const _OfferMetaChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 220),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: AppColors.accent),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.onSurface,
+                  ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -815,10 +1104,7 @@ class _RouteRow extends StatelessWidget {
           child: Container(
             width: 12,
             height: 12,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
         ),
         const SizedBox(width: 12),
@@ -894,26 +1180,23 @@ class _WaitingPanel extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                online
-                    ? 'Looking for nearby requests…'
-                    : 'You\'re offline',
+                online ? 'Looking for nearby requests…' : "You're offline",
                 textAlign: TextAlign.center,
                 style: tt.titleMedium?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               Text(
-                online
-                    ? 'Stay close to busy areas, $name.'
-                    : 'Go online to start receiving ride requests.',
+                    online
+                        ? 'Stay close to busy areas, $name.'
+                        : 'Pick Rides, Cargo, or Both, then go online.',
                 textAlign: TextAlign.center,
                 style: tt.bodyMedium,
               ),
               const SizedBox(height: 20),
               AppButton(
                 label: online ? 'Go offline' : 'Go online',
-                variant: online
-                    ? AppButtonVariant.ghost
-                    : AppButtonVariant.primary,
+                variant:
+                    online ? AppButtonVariant.ghost : AppButtonVariant.primary,
                 borderRadius: 28,
                 isLoading: toggling,
                 onPressed: onToggleOnline,
@@ -926,8 +1209,6 @@ class _WaitingPanel extends StatelessWidget {
   }
 }
 
-/// Top-left profile: surfaceTint fill + brand initial / photo.
-/// Uses inline image load so hot-reload of shared avatar widgets cannot null-out.
 class _ProfileAvatarButton extends StatelessWidget {
   const _ProfileAvatarButton({
     required this.name,
@@ -1021,169 +1302,4 @@ class _CircleBtn extends StatelessWidget {
       ),
     );
   }
-}
-
-class _MapPins extends StatelessWidget {
-  const _MapPins();
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        Transform.translate(
-          offset: const Offset(-48, 36),
-          child: const _Pin(
-            color: AppColors.surfaceTint,
-            border: AppColors.secondary,
-            child: Icon(Icons.person, size: 18, color: AppColors.secondary),
-          ),
-        ),
-        const _Pin(
-          color: AppColors.secondary,
-          border: AppColors.secondary,
-          child: Icon(
-            Icons.directions_car_filled_rounded,
-            size: 20,
-            color: Colors.white,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _Pin extends StatelessWidget {
-  const _Pin({
-    required this.color,
-    required this.border,
-    required this.child,
-  });
-
-  final Color color;
-  final Color border;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(color: border, width: 3),
-        boxShadow: AppColors.ambientShadow,
-      ),
-      child: Center(child: child),
-    );
-  }
-}
-
-class _DriverMapBackdrop extends StatelessWidget {
-  const _DriverMapBackdrop();
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        CustomPaint(painter: _DriverMapPainter()),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.white.withValues(alpha: 0.2),
-                Colors.transparent,
-                AppColors.background.withValues(alpha: 0.15),
-              ],
-              stops: const [0, 0.4, 1],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DriverMapPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = const Color(0xFFE8EEF5),
-    );
-
-    final road = Paint()
-      ..color = const Color(0xFFD5DDE8)
-      ..strokeWidth = 10
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final park =
-        Paint()..color = const Color(0xFFC8E6C9).withValues(alpha: 0.5);
-    final water =
-        Paint()..color = const Color(0xFFBBDEFB).withValues(alpha: 0.65);
-    final block = Paint()..color = const Color(0xFFDCE5F0);
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-          size.width * 0.5,
-          size.height * 0.08,
-          size.width * 0.55,
-          size.height * 0.22,
-        ),
-        const Radius.circular(40),
-      ),
-      water,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(
-          size.width * 0.06,
-          size.height * 0.52,
-          size.width * 0.3,
-          size.height * 0.16,
-        ),
-        const Radius.circular(18),
-      ),
-      park,
-    );
-
-    for (var r = 0; r < 5; r++) {
-      for (var c = 0; c < 4; c++) {
-        if ((r + c).isEven) {
-          canvas.drawRRect(
-            RRect.fromRectAndRadius(
-              Rect.fromLTWH(
-                16 + c * (size.width / 3.6),
-                48 + r * (size.height / 7),
-                size.width / 5.2,
-                size.height / 11,
-              ).deflate(6),
-              const Radius.circular(4),
-            ),
-            block,
-          );
-        }
-      }
-    }
-
-    canvas.drawLine(
-      Offset(0, size.height * 0.4),
-      Offset(size.width, size.height * 0.36),
-      road,
-    );
-    canvas.drawLine(
-      Offset(size.width * 0.28, 0),
-      Offset(size.width * 0.48, size.height),
-      road,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

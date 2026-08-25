@@ -9,6 +9,7 @@ class PhoneVerificationArgs {
     required this.regionCode,
     this.devBypassCode,
     this.intent = OnboardingIntent.passenger,
+    this.countryRegionId,
   });
 
   final String phone;
@@ -16,6 +17,8 @@ class PhoneVerificationArgs {
   final String regionCode;
   final String? devBypassCode;
   final OnboardingIntent intent;
+  /// Country id from GET /auth/regions — not a fleet city.
+  final String? countryRegionId;
 }
 
 /// Routes after OTP based on onboarding flags + user intent.
@@ -63,13 +66,12 @@ String nextRouteAfterLogin(
 
   // Driver path incomplete.
   if (mode == 'driver' || onboarding.isDriver) {
-    if (!onboarding.vehicleInfo ||
-        onboarding.pendingSteps.contains('vehicle_info')) {
-      return '/vehicle-details';
-    }
     if (!onboarding.documentsUploaded ||
         onboarding.pendingSteps.contains('documents_uploaded')) {
       return '/documents';
+    }
+    if (onboarding.pendingSteps.contains('driver_approved')) {
+      return '/under-review';
     }
     if (onboarding.canDrive || onboarding.driverApproved) {
       return '/driver-home';
@@ -115,13 +117,12 @@ String nextDriverRoute(
       onboarding.pendingSteps.contains('personal_info')) {
     return '/become-driver';
   }
-  if (!onboarding.vehicleInfo ||
-      onboarding.pendingSteps.contains('vehicle_info')) {
-    return '/vehicle-details';
-  }
   if (!onboarding.documentsUploaded ||
       onboarding.pendingSteps.contains('documents_uploaded')) {
     return '/documents';
+  }
+  if (onboarding.pendingSteps.contains('driver_approved')) {
+    return '/under-review';
   }
   if (onboarding.canDrive || onboarding.driverApproved) {
     return '/driver-home';

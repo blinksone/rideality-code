@@ -29,6 +29,14 @@ abstract final class AppColors {
   static const Color secondaryContainer = Color(0xFF1E6FE5);
   static const Color onSecondaryContainer = Color(0xFFFFFFFF);
 
+  /// Teal accent — route canvas, selection states, primary CTAs on ride flow.
+  static const Color accent = Color(0xFF0D9488);
+  static const Color onAccent = Color(0xFFFFFFFF);
+  static const Color accentSoft = Color(0xFFCCFBF1);
+  static const Color accentMuted = Color(0xFF14B8A6);
+  static const Color canvasDark = Color(0xFF0B1220);
+  static const Color canvasDot = Color(0xFF1E293B);
+
   static const Color outline = Color(0xFF9CA3AF);
   static const Color outlineVariant = Color(0xFFD1D5DB);
 

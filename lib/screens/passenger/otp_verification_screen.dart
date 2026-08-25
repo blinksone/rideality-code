@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/storage/token_storage.dart';
 import '../../models/phone_verification_args.dart';
 import '../../services/auth_api_service.dart';
 import '../../theme/app_colors.dart';
@@ -47,6 +48,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
         phone: widget.args.phone,
         code: _otp,
         regionCode: widget.args.regionCode,
+        countryRegionId: widget.args.countryRegionId,
       );
       if (!mounted) return;
 
@@ -55,6 +57,14 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
       } catch (_) {}
 
       if (!mounted) return;
+
+      // Persist onboarding intent so cold-start restoration keeps the right flow
+      // even if user abandons before completing onboarding.
+      await TokenStorage.instance.setPendingOnboardingIntent(
+        widget.args.intent == OnboardingIntent.login ? null : widget.args.intent.name,
+      );
+      if (!mounted) return;
+
       final route = nextRouteAfterOtp(
         session.user.onboarding,
         isNewUser: session.isNewUser,

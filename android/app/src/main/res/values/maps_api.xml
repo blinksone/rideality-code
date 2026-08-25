@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Restrict in Google Cloud: com.rideality.app + SHA-1 -->
+    <string name="google_maps_api_key" translatable="false">AIzaSyBrqFXpS37FvujkuBpkddSn0LpGwxroqok</string>
+</resources>

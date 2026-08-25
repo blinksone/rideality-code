@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/storage/token_storage.dart';
 import '../../models/api_models.dart';
+import '../../models/trip_models.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/app_button.dart';
 
@@ -44,8 +45,8 @@ class _DestinationSearchSheetState extends State<DestinationSearchSheet> {
     super.dispose();
   }
 
-  void _confirm([String? value]) {
-    final dest = (value ?? _controller.text).trim();
+  void _confirm([String? value, SavedPlace? place]) {
+    final dest = (value ?? place?.address ?? _controller.text).trim();
     if (dest.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a destination')),
@@ -58,8 +59,21 @@ class _DestinationSearchSheetState extends State<DestinationSearchSheet> {
           content: Text('Complete your profile to book rides'),
         ),
       );
+      return;
     }
-    Navigator.of(context).pop(dest);
+    Navigator.of(context).pop(
+      DestinationPick(
+        address: dest,
+        latitude: place != null &&
+                (place.latitude != 0 || place.longitude != 0)
+            ? place.latitude
+            : null,
+        longitude: place != null &&
+                (place.latitude != 0 || place.longitude != 0)
+            ? place.longitude
+            : null,
+      ),
+    );
   }
 
   @override
@@ -179,7 +193,10 @@ class _DestinationSearchSheetState extends State<DestinationSearchSheet> {
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         subtitle: Text(p.address),
-                        onTap: () => _confirm(p.address),
+                        onTap: () {
+                          _controller.text = p.address;
+                          _confirm(p.address, p);
+                        },
                       ),
                     ),
                   ] else if (widget.places.isEmpty)

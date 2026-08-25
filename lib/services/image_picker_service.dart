@@ -34,19 +34,23 @@ class ImagePickerService {
     return PickedImageFile(file: file, name: _fileName(file));
   }
 
-  Future<PickedImageFile?> pickFromCamera() async {
+  Future<PickedImageFile?> pickFromCamera({
+    CameraDevice preferredCameraDevice = CameraDevice.rear,
+  }) async {
     final file = await _picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 85,
       maxWidth: 2048,
-      preferredCameraDevice: CameraDevice.front,
+      preferredCameraDevice: preferredCameraDevice,
     );
     if (file == null) return null;
     return PickedImageFile(file: file, name: _fileName(file));
   }
 
   Future<PickedImageFile?> pickDocument({required bool useCamera}) {
-    return useCamera ? pickFromCamera() : pickFromGallery();
+    return useCamera
+        ? pickFromCamera(preferredCameraDevice: CameraDevice.rear)
+        : pickFromGallery();
   }
 
   Future<PickedImageFile> uploadToStorage({
@@ -54,20 +58,32 @@ class ImagePickerService {
     required String storagePath,
   }) async {
     if (!FirebaseBootstrap.isReady) {
+      await FirebaseBootstrap.initialize();
+    }
+    if (!FirebaseBootstrap.isReady) {
       return image;
     }
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return image;
+    try {
+      var user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        final cred = await FirebaseAuth.instance.signInAnonymously();
+        user = cred.user;
+      }
+      if (user == null) return image;
 
-    final ref = FirebaseStorage.instance.ref(storagePath);
-    await ref.putFile(File(image.file.path));
-    final url = await ref.getDownloadURL();
-    return PickedImageFile(
-      file: image.file,
-      name: image.name,
-      downloadUrl: url,
-    );
+      final ref = FirebaseStorage.instance.ref(storagePath);
+      await ref.putFile(File(image.file.path));
+      final url = await ref.getDownloadURL();
+      return PickedImageFile(
+        file: image.file,
+        name: image.name,
+        downloadUrl: url,
+      );
+    } catch (_) {
+      // Fall back to local file; backend multipart upload still works.
+      return image;
+    }
   }
 
   String _fileName(XFile file) {

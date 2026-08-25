@@ -80,6 +80,8 @@ class OnboardingApiService {
   Future<OnboardingResult> completeDriver({
     required String fullName,
     required String dateOfBirth,
+    required String companyId,
+    required String fleetRegionId,
     String? email,
     String? gender,
     String? profession,
@@ -92,13 +94,14 @@ class OnboardingApiService {
     bool acceptPrivacy = true,
     String consentVersion = '1.0',
     SavedLocationInput? location,
-    String role = 'driver',
   }) async {
     final body = <String, dynamic>{
       'fullName': fullName.trim(),
-      'role': role,
-      'preferredLanguage': preferredLanguage,
       'dateOfBirth': dateOfBirth.trim(),
+      'companyId': companyId,
+      // Ops city (company.fleetRegionId) — not geo city id from /fleet/cities.
+      'regionId': fleetRegionId,
+      'preferredLanguage': preferredLanguage,
       'acceptTerms': acceptTerms,
       'acceptPrivacy': acceptPrivacy,
       'consentVersion': consentVersion,
@@ -110,33 +113,32 @@ class OnboardingApiService {
     _putIfNotEmpty(body, 'licenseExpiry', licenseExpiry);
     _putIfNotEmpty(body, 'emergencyContactName', emergencyContactName);
     _putIfNotEmpty(body, 'emergencyContactPhone', emergencyContactPhone);
-
-    final result = await _completeProfile(body);
-
     if (location != null) {
-      try {
-        await _client.post(
-          '/users/me/locations',
-          body: {
-            'locations': [location.toJson()],
-          },
-        );
-      } catch (_) {}
+      body['location'] = location.toJson();
     }
 
-    return result;
+    try {
+      final json = await _client.post('/onboarding/driver', body: body);
+      return OnboardingResult.fromJson(
+        (json['data'] as Map?)?.cast<String, dynamic>() ?? const {},
+      );
+    } on ApiException catch (e) {
+      if (!_isRouteMissing(e) && e.statusCode != 405) rethrow;
+    }
+
+    body['role'] = 'driver';
+    return _completeProfile(body);
   }
 
   Future<OnboardingStatus> getStatus() async {
     try {
-      final json = await _client.get('/users/me/onboarding');
+      final json = await _client.get('/onboarding/status');
       return OnboardingStatus.fromApiPayload(
         (json['data'] as Map?)?.cast<String, dynamic>(),
       );
     } on ApiException catch (e) {
       if (!_isRouteMissing(e)) rethrow;
-      // Older Postman path — usually 404 on live.
-      final json = await _client.get('/onboarding/status');
+      final json = await _client.get('/users/me/onboarding');
       return OnboardingStatus.fromApiPayload(
         (json['data'] as Map?)?.cast<String, dynamic>(),
       );

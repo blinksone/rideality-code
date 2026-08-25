@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/navigation/app_navigator.dart';
+import '../../core/storage/active_trip_store.dart';
 import '../../core/storage/token_storage.dart';
 import '../../models/api_models.dart';
 import '../../models/phone_verification_args.dart';
 import '../../services/auth_api_service.dart';
+import '../../services/push_notification_service.dart';
+import '../../services/realtime_socket_service.dart';
+import '../../services/trips_api_service.dart';
 import '../../services/user_api_service.dart';
 import '../../theme/app_colors.dart';
+import '../shared/active_ride_screen.dart';
 import 'passenger_dashboard_screen.dart';
 import 'welcome_screen.dart';
 
@@ -56,6 +62,8 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
             me.canBook,
         vehicleInfo: onboarding.vehicleInfo,
         documentsUploaded: onboarding.documentsUploaded,
+        documentsApproved: onboarding.documentsApproved,
+        documentStatus: onboarding.documentStatus,
         locationsSaved: onboarding.locationsSaved,
         driverApproved: onboarding.driverApproved || me.canDrive,
         profileComplete: onboarding.profileComplete,
@@ -67,13 +75,47 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
         pendingSteps: onboarding.pendingSteps,
       );
 
-      final route = nextRouteAfterLogin(
+      var route = nextRouteAfterLogin(
         merged,
         isNewUser: false,
         activeMode: me.activeMode,
         userStatus: me.status,
       );
-      _go(route);
+
+      // If the user chose driver onboarding (OTP intent) but abandoned before
+      // submitting onboarding/driver, the backend onboarding flags may still
+      // look like a passenger. Use the persisted intent to restore the correct
+      // flow.
+      final pendingIntent = await TokenStorage.instance.pendingOnboardingIntent;
+      if (pendingIntent == OnboardingIntent.driver.name) {
+        route = nextDriverRoute(merged, isNewUser: false);
+      }
+      // Re-register FCM after cold start so backend has a fresh token.
+      // ignore: unawaited_futures
+      PushNotificationService.instance.registerTokenWithBackend();
+      // Resume in-progress trip rooms on cold start.
+      await RealtimeSocketService.instance.resumeIfNeeded();
+      ActiveRideArgs? resumeArgs;
+      final rideId = await ActiveTripStore.instance.rideId;
+      final role = await ActiveTripStore.instance.role;
+      if (rideId != null && role != null) {
+        try {
+          final trip = await TripsApiService.instance.getTrip(rideId);
+          if (trip.status.isTerminal) {
+            await ActiveTripStore.instance.clear();
+          } else {
+            resumeArgs = ActiveRideArgs(
+              tripId: rideId,
+              role: role,
+              initialTrip: trip,
+            );
+          }
+        } catch (_) {
+          // Keep cache; user can open home without blocking boot.
+        }
+      }
+      if (!mounted) return;
+      _go(route, resumeActiveRide: resumeArgs);
     } on ApiException catch (e) {
       if (e.isAuthFailure) {
         // ApiClient usually refreshes automatically; one extra attempt for cold start.
@@ -105,12 +147,20 @@ class _SessionBootstrapScreenState extends State<SessionBootstrapScreen> {
     }
   }
 
-  void _go(String route) {
+  void _go(String route, {ActiveRideArgs? resumeActiveRide}) {
     // Avoid routing through bootstrap again.
     if (route == SessionBootstrapScreen.routeName) {
       route = WelcomeScreen.routeName;
     }
     Navigator.of(context).pushNamedAndRemoveUntil(route, (_) => false);
+    if (resumeActiveRide != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        AppNavigator.key.currentState?.pushNamed(
+          ActiveRideScreen.routeName,
+          arguments: resumeActiveRide,
+        );
+      });
+    }
   }
 
   @override

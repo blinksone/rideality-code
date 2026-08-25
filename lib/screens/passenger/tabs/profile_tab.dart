@@ -3,13 +3,16 @@ import 'package:flutter/material.dart';
 import '../../../core/api/api_exception.dart';
 import '../../../models/api_models.dart';
 import '../../../services/auth_api_service.dart';
+import '../../../services/driver_api_service.dart';
 import '../../../services/user_api_service.dart';
 import '../../../theme/app_colors.dart';
 import '../../../widgets/app_button.dart';
 import '../../../widgets/app_text_field.dart';
 import '../../../widgets/network_avatar.dart';
+import '../../driver/documents_upload_screen.dart';
 import '../../driver/become_driver_screen.dart';
 import '../../driver/driver_dashboard_screen.dart';
+import '../../driver/under_review_screen.dart';
 import '../notifications_screen.dart';
 import '../save_location_screen.dart';
 import '../welcome_screen.dart';
@@ -39,6 +42,8 @@ class ProfileTab extends StatefulWidget {
 class _ProfileTabState extends State<ProfileTab> {
   bool _editing = false;
   bool _saving = false;
+  DriverView? _driver;
+  List<DriverDocument> _rejectedDocs = const [];
   late final TextEditingController _name;
   late final TextEditingController _email;
 
@@ -49,6 +54,7 @@ class _ProfileTabState extends State<ProfileTab> {
       text: widget.profile?.fullName ?? widget.passenger.fullName,
     );
     _email = TextEditingController(text: widget.profile?.email ?? '');
+    _loadDriver();
   }
 
   @override
@@ -65,6 +71,41 @@ class _ProfileTabState extends State<ProfileTab> {
     _name.dispose();
     _email.dispose();
     super.dispose();
+  }
+
+  bool get _driverRejected =>
+      (_driver?.isRejected ?? false) || (_driver?.isSuspended ?? false);
+
+  bool get _needsDocReupload => _rejectedDocs.isNotEmpty;
+
+  Future<void> _loadDriver() async {
+    if (!widget.onboarding.isDriver) {
+      if (_driver != null || _rejectedDocs.isNotEmpty) {
+        setState(() {
+          _driver = null;
+          _rejectedDocs = const [];
+        });
+      }
+      return;
+    }
+    try {
+      final driver = await DriverApiService.instance.getDriverView();
+      var rejected = const <DriverDocument>[];
+      try {
+        final docs = await DriverApiService.instance.listDocuments();
+        rejected = docs.where((d) => d.needsResubmission).toList();
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _driver = driver;
+        _rejectedDocs = rejected;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _refresh() async {
+    await widget.onRefresh();
+    await _loadDriver();
   }
 
   Future<void> _save() async {
@@ -90,6 +131,64 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
+  String _driverApplicationSubtitle() {
+    if (_needsDocReupload) {
+      final labels = _rejectedDocs
+          .map((d) => switch (d.type) {
+                'selfie' => 'Selfie',
+                'driver_license' => 'License',
+                'national_id' => 'National ID',
+                _ => d.type.replaceAll('_', ' '),
+              })
+          .toSet()
+          .join(', ');
+      final reason = _rejectedDocs.first.rejectionReason?.trim();
+      if (reason != null && reason.isNotEmpty) {
+        return 'Re-upload $labels — $reason';
+      }
+      return 'Re-upload rejected: $labels';
+    }
+    final driver = _driver;
+    if (driver == null) {
+      return 'Waiting for your city fleet to approve you.';
+    }
+    if (driver.isRejected) {
+      final reason = driver.rejectionReason?.trim();
+      if (reason != null && reason.isNotEmpty) {
+        return 'Rejected — $reason';
+      }
+      return 'Rejected by your city fleet';
+    }
+    if (driver.isSuspended) {
+      final reason = driver.rejectionReason?.trim();
+      if (reason != null && reason.isNotEmpty) {
+        return 'Suspended — $reason';
+      }
+      return 'Driver account suspended';
+    }
+    if (driver.isApproved) return 'Approved — open driver dashboard';
+    return 'Waiting for your city fleet to approve you.';
+  }
+
+  String _accountStatusSubtitle(UserProfile? me) {
+    final riderStatus = (me?.status ?? '').trim();
+    final parts = <String>[];
+    if (_driver?.isRejected ?? false) {
+      parts.add('Driver rejected');
+    } else if (_driver?.isSuspended ?? false) {
+      parts.add('Driver suspended');
+    }
+    if (riderStatus.isNotEmpty) {
+      parts.add('Rider ${riderStatus.replaceAll('_', ' ')}');
+    }
+    if (widget.onboarding.phoneVerified) parts.add('Phone verified');
+    if (widget.onboarding.canBook || (me?.canBook ?? false)) {
+      parts.add('Can book');
+    }
+    if (widget.onboarding.profileComplete) parts.add('Profile complete');
+    return parts.join(' · ').ifEmpty('In progress');
+  }
+
   Future<void> _logout() async {
     await AuthApiService.instance.logout();
     if (!mounted) return;
@@ -111,7 +210,7 @@ class _ProfileTabState extends State<ProfileTab> {
     return SafeArea(
       child: RefreshIndicator(
         color: AppColors.secondary,
-        onRefresh: widget.onRefresh,
+        onRefresh: _refresh,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
           children: [
@@ -242,18 +341,20 @@ class _ProfileTabState extends State<ProfileTab> {
                       .then((_) => widget.onRefresh());
                 },
               ),
-              _Tile(
-                icon: Icons.local_taxi_outlined,
-                title: 'Become a driver',
-                subtitle: 'Earn with Rideality',
-                onTap: () {
-                  Navigator.of(context)
-                      .pushNamed(BecomeDriverScreen.routeName);
-                },
-              ),
-              if (widget.onboarding.canDrive ||
-                  widget.onboarding.driverApproved ||
-                  (me?.canDrive ?? false))
+              if (!widget.onboarding.isDriver)
+                _Tile(
+                  icon: Icons.local_taxi_outlined,
+                  title: 'Become a driver',
+                  subtitle: 'Earn with Rideality',
+                  onTap: () {
+                    Navigator.of(context)
+                        .pushNamed(BecomeDriverScreen.routeName);
+                  },
+                ),
+              if (!_driverRejected &&
+                  (widget.onboarding.canDrive ||
+                      widget.onboarding.driverApproved ||
+                      (me?.canDrive ?? false)))
                 _Tile(
                   icon: Icons.speed_rounded,
                   title: 'Driver dashboard',
@@ -264,18 +365,35 @@ class _ProfileTabState extends State<ProfileTab> {
                       (_) => false,
                     );
                   },
+                )
+              else if (widget.onboarding.isDriver)
+                _Tile(
+                  icon: _needsDocReupload
+                      ? Icons.upload_rounded
+                      : (_driver?.isRejected ?? false) ||
+                              (_driver?.isSuspended ?? false)
+                          ? Icons.gpp_bad_rounded
+                          : Icons.hourglass_top_rounded,
+                  title: _needsDocReupload
+                      ? 'Re-upload documents'
+                      : 'Driver application',
+                  subtitle: _driverApplicationSubtitle(),
+                  onTap: () {
+                    if (_needsDocReupload) {
+                      Navigator.of(context).pushNamed(
+                        DocumentsUploadScreen.routeName,
+                      ).then((_) => _loadDriver());
+                      return;
+                    }
+                    Navigator.of(context)
+                        .pushNamed(UnderReviewScreen.routeName)
+                        .then((_) => _loadDriver());
+                  },
                 ),
               _Tile(
                 icon: Icons.verified_user_outlined,
                 title: 'Account status',
-                subtitle: [
-                  if (me?.status != null && me!.status!.isNotEmpty)
-                    me.status!.replaceAll('_', ' '),
-                  if (widget.onboarding.phoneVerified) 'Phone verified',
-                  if (widget.onboarding.canBook || (me?.canBook ?? false))
-                    'Can book',
-                  if (widget.onboarding.profileComplete) 'Profile complete',
-                ].join(' · ').ifEmpty('In progress'),
+                subtitle: _accountStatusSubtitle(me),
                 onTap: null,
               ),
               const SizedBox(height: 16),

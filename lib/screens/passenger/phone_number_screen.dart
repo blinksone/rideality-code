@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/phone_rules.dart';
 import '../../models/api_models.dart';
 import '../../models/phone_verification_args.dart';
 import '../../services/auth_api_service.dart';
@@ -85,15 +86,36 @@ class _PhoneNumberScreenState extends State<PhoneNumberScreen> {
     }
   }
 
+  int get _maxInputDigits {
+    final range = PhoneRules.lengthFor(_selectedRegion?.code);
+    // +1 allows an optional leading trunk 0 (e.g. 03xx… for PK).
+    return range.max + 1;
+  }
+
+  void _onRegionChanged(Region? region) {
+    if (region == null) return;
+    final max = PhoneRules.lengthFor(region.code).max + 1;
+    final text = _phoneController.text.replaceAll(RegExp(r'\D'), '');
+    setState(() {
+      _selectedRegion = region;
+      if (text.length > max) {
+        _phoneController.text = text.substring(0, max);
+        _phoneController.selection =
+            TextSelection.collapsed(offset: _phoneController.text.length);
+      }
+    });
+  }
+
   Future<void> _continue() async {
     final region = _selectedRegion;
-    final local = _phoneController.text.trim();
     if (region == null) {
       _toast('Please select a region');
       return;
     }
-    if (local.replaceAll(RegExp(r'\D'), '').length < 7) {
-      _toast('Enter a valid phone number');
+    final local = PhoneRules.normalizeLocal(_phoneController.text);
+    final error = PhoneRules.validateLocal(local, region.code);
+    if (error != null) {
+      _toast(error);
       return;
     }
 
@@ -113,6 +135,7 @@ class _PhoneNumberScreenState extends State<PhoneNumberScreen> {
           regionCode: region.code,
           devBypassCode: result.resolvedDevCode,
           intent: widget.intent,
+          countryRegionId: region.id,
         ),
       );
     } on ApiException catch (e) {
@@ -205,7 +228,7 @@ class _PhoneNumberScreenState extends State<PhoneNumberScreen> {
                             ),
                           )
                           .toList(),
-                      onChanged: (v) => setState(() => _selectedRegion = v),
+                      onChanged: _onRegionChanged,
                     ),
                   ),
                 ),
@@ -213,18 +236,31 @@ class _PhoneNumberScreenState extends State<PhoneNumberScreen> {
                 TextField(
                   controller: _phoneController,
                   keyboardType: TextInputType.phone,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(_maxInputDigits),
+                  ],
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.4,
                       ),
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Mobile number',
+                    hintText: PhoneRules.hintFor(_selectedRegion?.code),
+                    prefixText: _selectedRegion == null
+                        ? null
+                        : '${_selectedRegion!.phonePrefix} ',
+                    prefixStyle:
+                        Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.onSurfaceVariant,
+                            ),
                   ),
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'Use your WhatsApp / SMS number for ${_selectedRegion?.name ?? 'your region'}.',
+                  'Enter ${_selectedRegion?.name ?? 'your region'} mobile without country code. '
+                  '${PhoneRules.hintFor(_selectedRegion?.code)}.',
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
                 const Spacer(),
