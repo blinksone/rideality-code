@@ -1,11 +1,12 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api/api_exception.dart';
 import '../../core/storage/token_storage.dart';
 import '../../models/api_models.dart';
+import '../../models/trip_models.dart';
 import '../../services/user_api_service.dart';
 import '../../theme/app_colors.dart';
+import '../shared/active_ride_screen.dart';
 import 'complete_profile_screen.dart';
 import 'tabs/activity_tab.dart';
 import 'tabs/home_tab.dart';
@@ -175,6 +176,19 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
     setState(() => _hidePromoBanner = true);
   }
 
+  Future<void> _openActiveRide(RideSummary ride) async {
+    if (!ride.isActive || ride.id.isEmpty) return;
+    await Navigator.of(context).pushNamed(
+      ActiveRideScreen.routeName,
+      arguments: ActiveRideArgs(
+        tripId: ride.id,
+        role: SessionRole.rider,
+      ),
+    );
+    if (!mounted) return;
+    await _bootstrap();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -193,6 +207,7 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
                       profileProgress: _profileProgress,
                       hideProfileBanner: _hideProfileBanner,
                       hidePromoBanner: _hidePromoBanner,
+                      rides: _rides,
                       onRefresh: _bootstrap,
                       onDismissProfileBanner: _dismissProfileBanner,
                       onDismissPromoBanner: _dismissPromoBanner,
@@ -200,6 +215,7 @@ class _PassengerDashboardScreenState extends State<PassengerDashboardScreen> {
                       onOpenWallet: () => _openTab(2),
                       onCompleteProfile: _openCompleteProfile,
                       onSavedPlacesChanged: _bootstrap,
+                      onOpenActiveRide: _openActiveRide,
                     ),
                     ActivityTab(
                       rides: _rides,

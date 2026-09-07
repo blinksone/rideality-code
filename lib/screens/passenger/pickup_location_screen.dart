@@ -146,7 +146,10 @@ class _PickupLocationScreenState extends State<PickupLocationScreen> {
   }
 
   Future<void> _runSearch(String query) async {
-    setState(() => _searching = true);
+    setState(() {
+      _searching = true;
+      _error = null;
+    });
     try {
       final hits = await _api.search(
         query: query,
@@ -159,9 +162,20 @@ class _PickupLocationScreenState extends State<PickupLocationScreen> {
         _searchHits = hits;
         _searching = false;
       });
-    } catch (_) {
+    } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _searching = false);
+      setState(() {
+        _searching = false;
+        _searchHits = const [];
+        _error = e.message;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _searching = false;
+        _searchHits = const [];
+        _error = e.toString();
+      });
     }
   }
 
@@ -262,20 +276,31 @@ class _PickupLocationScreenState extends State<PickupLocationScreen> {
     setState(() => _selecting = true);
     try {
       SelectedLocation loc;
-      if (hit.source == PlaceHitSource.google &&
-          hit.googlePlaceId != null &&
-          hit.googlePlaceId!.isNotEmpty) {
+      final googleId = hit.googlePlaceId;
+      final dbId = hit.placeId;
+      if (hit.source == PlaceHitSource.google ||
+          ((dbId == null || dbId.isEmpty) &&
+              googleId != null &&
+              googleId.isNotEmpty)) {
         loc = await _api.selectPlace(
-          googlePlaceId: hit.googlePlaceId,
+          googlePlaceId: googleId,
           sessionToken: _sessionToken,
         );
-      } else if (hit.placeId != null && hit.placeId!.isNotEmpty) {
-        loc = await _api.selectPlace(placeId: hit.placeId);
+      } else if (dbId != null && dbId.isNotEmpty) {
+        loc = await _api.selectPlace(placeId: dbId);
+      } else if (hit.latitude != null && hit.longitude != null) {
+        loc = SelectedLocation(
+          name: hit.name,
+          address: hit.address,
+          latitude: hit.latitude!,
+          longitude: hit.longitude!,
+          googlePlaceId: googleId,
+          databaseId: dbId,
+          type: hit.type,
+          distanceKm: hit.distanceKm,
+        );
       } else {
-        loc = await _api.selectPlace(
-          googlePlaceId: hit.googlePlaceId,
-          sessionToken: _sessionToken,
-        );
+        throw ApiException('Missing place details');
       }
       if (!mounted) return;
       _sessionToken = null;
@@ -440,7 +465,18 @@ class _PickupLocationScreenState extends State<PickupLocationScreen> {
                       ),
                     ),
                   if (_isSearching) ...[
-                    if (_searchHits.isEmpty && !_searching)
+                    if (_error != null)
+                      Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Text(
+                          _error!,
+                          style: tt.bodyMedium?.copyWith(
+                            color: AppColors.onSurfaceVariant,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      )
+                    else if (_searchHits.isEmpty && !_searching)
                       Padding(
                         padding: const EdgeInsets.all(20),
                         child: Text(

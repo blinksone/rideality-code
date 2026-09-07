@@ -1,11 +1,14 @@
-import 'dart:async' show unawaited;
+import 'dart:async' show Timer, unawaited;
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/navigation/app_navigator.dart';
+import '../../core/storage/active_trip_store.dart';
 import '../../core/storage/token_storage.dart';
+import '../../core/vehicle_catalog.dart';
 import '../../models/trip_models.dart';
 import '../../services/realtime_socket_service.dart';
 import '../../services/trips_api_service.dart';
@@ -15,6 +18,7 @@ import '../../widgets/rideality_pill.dart';
 import '../../widgets/rideality_trip_map.dart';
 import '../../widgets/route_canvas.dart';
 import '../shared/active_ride_screen.dart';
+import 'passenger_dashboard_screen.dart';
 
 /// Ride options + confirm — fares from POST /trips/quote.
 class RideConfirmScreen extends StatefulWidget {
@@ -55,6 +59,7 @@ class RideConfirmArgs {
 
 class _RideConfirmScreenState extends State<RideConfirmScreen> {
   static const _tabs = ['Transport', 'Taxi', 'Delivery'];
+  static const _supplyPollInterval = Duration(seconds: 5);
 
   int _tabIndex = 1; // Taxi
   String? _selectedVehicleType;
@@ -63,13 +68,66 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
   bool _quoteLoading = true;
   String? _quoteError;
   TripQuote? _quote;
+  List<LatLng> _routePoints = const [];
+  List<NearbySupplyPin> _supplyPins = const [];
+  Timer? _supplyPollTimer;
+  String? _cityId;
+  bool _supplyPollInFlight = false;
 
   @override
   void initState() {
     super.initState();
-    _selectedVehicleType = widget.args.initialVehicleId;
+    _selectedVehicleType =
+        VehicleCatalog.normalize(widget.args.initialVehicleId);
     unawaited(_loadWalletLabel());
+    unawaited(_resolveCityId());
     unawaited(_loadQuote());
+    unawaited(_loadRoute());
+    _startSupplyPolling();
+  }
+
+  @override
+  void dispose() {
+    _supplyPollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _resolveCityId() async {
+    final id = await DashboardPrefs.instance.fleetCityId;
+    if (!mounted) return;
+    _cityId = id;
+  }
+
+  String get _selectedProduct =>
+      VehicleCatalog.normalize(_selectedVehicleType);
+
+  void _startSupplyPolling() {
+    _supplyPollTimer?.cancel();
+    unawaited(_pollNearbySupply());
+    _supplyPollTimer = Timer.periodic(
+      _supplyPollInterval,
+      (_) => unawaited(_pollNearbySupply()),
+    );
+  }
+
+  Future<void> _pollNearbySupply() async {
+    if (_supplyPollInFlight || !mounted) return;
+    _supplyPollInFlight = true;
+    final a = widget.args;
+    try {
+      final pins = await TripsApiService.instance.getNearbySupply(
+        latitude: a.pickupLat,
+        longitude: a.pickupLng,
+        product: _selectedProduct,
+        cityId: _cityId,
+      );
+      if (!mounted) return;
+      setState(() => _supplyPins = pins);
+    } catch (_) {
+      // Soft-fail: empty pins is normal; quote still works.
+    } finally {
+      _supplyPollInFlight = false;
+    }
   }
 
   String? get _liveBookingType {
@@ -103,6 +161,63 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
     }
   }
 
+  List<LatLng> _pointsFromQuote(TripQuote quote) {
+    if (quote.routePoints.length >= 2) {
+      return quote.routePoints
+          .map((p) => LatLng(p.latitude, p.longitude))
+          .toList();
+    }
+    final encoded = quote.polyline;
+    if (encoded != null && encoded.isNotEmpty) {
+      return decodePolyline(encoded)
+          .map((p) => LatLng(p.latitude, p.longitude))
+          .toList();
+    }
+    return const [];
+  }
+
+  List<LatLng> _straightFallbackRoute() {
+    final a = widget.args;
+    return [
+      LatLng(a.pickupLat, a.pickupLng),
+      LatLng(a.dropoffLat, a.dropoffLng),
+    ];
+  }
+
+  Future<void> _loadRoute() async {
+    final a = widget.args;
+    try {
+      final route = await TripsApiService.instance.getRoute(
+        pickupLat: a.pickupLat,
+        pickupLng: a.pickupLng,
+        dropoffLat: a.dropoffLat,
+        dropoffLng: a.dropoffLng,
+      );
+      if (!mounted) return;
+
+      List<LatLng> points = const [];
+      if (route.points.length >= 2) {
+        points = route.points
+            .map((p) => LatLng(p.latitude, p.longitude))
+            .toList();
+      } else if (route.encodedPolyline != null &&
+          route.encodedPolyline!.isNotEmpty) {
+        points = decodePolyline(route.encodedPolyline!)
+            .map((p) => LatLng(p.latitude, p.longitude))
+            .toList();
+      }
+
+      setState(() {
+        _routePoints = points.length >= 2 ? points : _straightFallbackRoute();
+      });
+    } catch (_) {
+      if (!mounted) return;
+      if (_routePoints.length < 2) {
+        setState(() => _routePoints = _straightFallbackRoute());
+      }
+    }
+  }
+
   Future<void> _loadQuote() async {
     final bookingType = _liveBookingType;
     if (bookingType == null) {
@@ -131,11 +246,19 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
         bookingType: bookingType,
       );
       if (!mounted) return;
+      final fromQuote = _pointsFromQuote(quote);
       setState(() {
         _quote = quote;
         _quoteLoading = false;
         _selectedVehicleType = _pickDefaultVehicle(quote.options);
+        if (fromQuote.length >= 2) {
+          _routePoints = fromQuote;
+        }
       });
+      if (fromQuote.length < 2) {
+        unawaited(_loadRoute());
+      }
+      unawaited(_pollNearbySupply());
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -157,13 +280,26 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
     final available = options.where((o) => o.available).toList();
     if (available.isEmpty) return null;
 
-    final preferred = widget.args.initialVehicleId;
-    if (available.any((o) => o.vehicleType == preferred)) {
-      return preferred;
+    final preferred = VehicleCatalog.normalize(widget.args.initialVehicleId);
+    if (available.any((o) =>
+        VehicleCatalog.normalize(o.vehicleType) == preferred)) {
+      return available
+          .firstWhere(
+            (o) => VehicleCatalog.normalize(o.vehicleType) == preferred,
+          )
+          .vehicleType;
     }
     if (_selectedVehicleType != null &&
-        available.any((o) => o.vehicleType == _selectedVehicleType)) {
-      return _selectedVehicleType;
+        available.any((o) =>
+            VehicleCatalog.normalize(o.vehicleType) ==
+            VehicleCatalog.normalize(_selectedVehicleType))) {
+      return available
+          .firstWhere(
+            (o) =>
+                VehicleCatalog.normalize(o.vehicleType) ==
+                VehicleCatalog.normalize(_selectedVehicleType),
+          )
+          .vehicleType;
     }
 
     for (final o in available) {
@@ -257,17 +393,28 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
 
       await RealtimeSocketService.instance.connectAsRider(rideId: trip.id);
       RealtimeSocketService.instance.joinRide(trip.id);
+      await ActiveTripStore.instance.save(
+        rideId: trip.id,
+        role: SessionRole.rider,
+        vehicleType: selected.vehicleType,
+      );
 
       if (!mounted) return;
-      await Navigator.of(context).pushNamedAndRemoveUntil(
-        ActiveRideScreen.routeName,
-        (route) => route.settings.name == '/home' || route.isFirst,
-        arguments: ActiveRideArgs(
-          tripId: trip.id,
-          role: SessionRole.rider,
-          initialTrip: trip,
-        ),
+      // Remount home so the active-ride banner appears after minimize.
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        PassengerDashboardScreen.routeName,
+        (_) => false,
       );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        AppNavigator.key.currentState?.pushNamed(
+          ActiveRideScreen.routeName,
+          arguments: ActiveRideArgs(
+            tripId: trip.id,
+            role: SessionRole.rider,
+            initialTrip: trip,
+          ),
+        );
+      });
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _requesting = false);
@@ -375,7 +522,10 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
             glyph: _glyphFor(o.vehicleType),
             selected: o.vehicleType == _selectedVehicleType,
             onTap: o.available
-                ? () => setState(() => _selectedVehicleType = o.vehicleType)
+                ? () {
+                    setState(() => _selectedVehicleType = o.vehicleType);
+                    unawaited(_pollNearbySupply());
+                  }
                 : null,
           ),
         );
@@ -402,6 +552,9 @@ class _RideConfirmScreenState extends State<RideConfirmScreen> {
                 RidealityTripMap(
                   pickup: LatLng(a.pickupLat, a.pickupLng),
                   dropoff: LatLng(a.dropoffLat, a.dropoffLng),
+                  routePoints: _routePoints,
+                  supplyPins: _supplyPins,
+                  showEmptySupplyBanner: true,
                   etaMinutes: mapEta,
                   showBack: true,
                   onBack: () => Navigator.of(context).maybePop(),

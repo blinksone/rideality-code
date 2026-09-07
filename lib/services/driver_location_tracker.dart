@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
 
+import '../core/vehicle_catalog.dart';
 import 'realtime_socket_service.dart';
 
-/// Throttled driver GPS → `driver:location_update` (distanceFilter ≥ 15m, ≥ 4s).
+/// Throttled driver GPS → `driver:location_update`
+/// (every 4–5s **or** ≥15m move). Stop when going offline.
 class DriverLocationTracker {
   DriverLocationTracker._();
   static final DriverLocationTracker instance = DriverLocationTracker._();
@@ -12,10 +14,16 @@ class DriverLocationTracker {
   final RealtimeSocketService _socket = RealtimeSocketService.instance;
 
   StreamSubscription<Position>? _sub;
+  Timer? _heartbeat;
   DateTime? _lastEmit;
+  Position? _lastPosition;
   String? _vehicleType;
+  String? _cityId;
   List<String> _serviceModes = const ['rides'];
   bool _running = false;
+
+  static const _minEmitGap = Duration(milliseconds: 4000);
+  static const _heartbeatEvery = Duration(seconds: 5);
 
   bool get isRunning => _running;
 
@@ -47,17 +55,17 @@ class DriverLocationTracker {
   }
 
   Future<void> start({
-    String vehicleType = 'sedan',
+    String vehicleType = VehicleCatalog.economy,
+    String? cityId,
     List<String>? serviceModes,
   }) async {
     if (serviceModes != null && serviceModes.isNotEmpty) {
       _serviceModes = List<String>.from(serviceModes);
     }
-    _vehicleType = vehicleType;
-    if (_running) {
-      // Modes/vehicle may have changed while already streaming.
-      return;
-    }
+    _vehicleType = VehicleCatalog.normalize(vehicleType);
+    if (cityId != null && cityId.isNotEmpty) _cityId = cityId;
+    if (_running) return;
+
     final ok = await ensurePermission();
     if (!ok) {
       throw StateError('Location permission or service unavailable');
@@ -76,7 +84,12 @@ class DriverLocationTracker {
       onError: (_) {},
     );
 
-    // Immediate first fix so dispatch geo has a point.
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(_heartbeatEvery, (_) {
+      final p = _lastPosition;
+      if (p != null) _emit(p, force: true);
+    });
+
     final first = await currentPosition();
     if (first != null) _onPosition(first);
   }
@@ -85,10 +98,23 @@ class DriverLocationTracker {
     if (modes.isNotEmpty) _serviceModes = modes;
   }
 
+  void updateMeta({String? vehicleType, String? cityId}) {
+    if (vehicleType != null && vehicleType.isNotEmpty) {
+      _vehicleType = VehicleCatalog.normalize(vehicleType);
+    }
+    if (cityId != null && cityId.isNotEmpty) _cityId = cityId;
+  }
+
   void _onPosition(Position p) {
+    _lastPosition = p;
+    _emit(p, force: false);
+  }
+
+  void _emit(Position p, {required bool force}) {
     final now = DateTime.now();
-    if (_lastEmit != null &&
-        now.difference(_lastEmit!).inMilliseconds < 4000) {
+    if (!force &&
+        _lastEmit != null &&
+        now.difference(_lastEmit!) < _minEmitGap) {
       return;
     }
     _lastEmit = now;
@@ -98,14 +124,18 @@ class DriverLocationTracker {
       heading: p.heading,
       speed: p.speed,
       vehicleType: _vehicleType,
+      cityId: _cityId,
       serviceModes: _serviceModes,
     );
   }
 
   Future<void> stop() async {
     _running = false;
+    _heartbeat?.cancel();
+    _heartbeat = null;
     await _sub?.cancel();
     _sub = null;
     _lastEmit = null;
+    _lastPosition = null;
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/storage/token_storage.dart';
+import '../../../core/vehicle_catalog.dart';
 import '../../../models/api_models.dart';
 import '../../../theme/app_colors.dart';
 import '../notifications_screen.dart';
@@ -24,6 +25,8 @@ class HomeTab extends StatelessWidget {
     required this.onOpenWallet,
     required this.onCompleteProfile,
     required this.onSavedPlacesChanged,
+    this.rides = const [],
+    this.onOpenActiveRide,
   });
 
   final UserProfile? profile;
@@ -39,6 +42,15 @@ class HomeTab extends StatelessWidget {
   final VoidCallback onOpenWallet;
   final VoidCallback onCompleteProfile;
   final Future<void> Function() onSavedPlacesChanged;
+  final List<RideSummary> rides;
+  final Future<void> Function(RideSummary ride)? onOpenActiveRide;
+
+  RideSummary? get _activeRide {
+    for (final r in rides) {
+      if (r.isActive) return r;
+    }
+    return null;
+  }
 
   bool get _canBook =>
       profile?.canBook == true ||
@@ -174,7 +186,7 @@ class HomeTab extends StatelessWidget {
   Future<void> _openRides(
     BuildContext context, {
     String? initialDestination,
-    String vehicleType = 'sedan',
+    String vehicleType = 'economy',
   }) async {
     await Navigator.of(context).pushNamed(
       RidesDestinationScreen.routeName,
@@ -182,7 +194,7 @@ class HomeTab extends StatelessWidget {
         places: passenger.savedPlaces,
         canBook: _canBook,
         initialDestination: initialDestination,
-        vehicleType: vehicleType,
+        vehicleType: VehicleCatalog.normalize(vehicleType),
       ),
     );
   }
@@ -334,6 +346,17 @@ class HomeTab extends StatelessWidget {
                         ],
                       ),
 
+                      // —— Active ride —————————————
+                      if (_activeRide != null) ...[
+                        const SizedBox(height: 16),
+                        _ActiveRideBanner(
+                          ride: _activeRide!,
+                          onTap: onOpenActiveRide == null
+                              ? null
+                              : () => onOpenActiveRide!(_activeRide!),
+                        ),
+                      ],
+
                       // —— Promo ————————————————
                       if (!hidePromoBanner) ...[
                         const SizedBox(height: 18),
@@ -381,11 +404,6 @@ class HomeTab extends StatelessWidget {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      _RidesFeatureCard(
-                        onTap: () => _openRides(context),
-                      ),
-
                       const SizedBox(height: 22),
 
                       // —— Where to? —————————————
@@ -498,6 +516,93 @@ class HomeTab extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Pieces
 // ─────────────────────────────────────────────────────────────────────────────
+
+class _ActiveRideBanner extends StatelessWidget {
+  const _ActiveRideBanner({required this.ride, this.onTap});
+
+  final RideSummary ride;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    final dest = ride.dropoffAddress?.trim();
+    final subtitle = (dest != null && dest.isNotEmpty)
+        ? dest
+        : 'Tap to track your trip';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Ink(
+          padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+          decoration: BoxDecoration(
+            color: AppColors.secondary,
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: AppColors.ambientShadow,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(
+                  Icons.directions_car_filled_rounded,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      ride.statusLabel,
+                      style: tt.labelSmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      ride.vehicleTypeLabel.isNotEmpty
+                          ? '${ride.vehicleTypeLabel} · Ongoing'
+                          : 'Ongoing ride',
+                      style: tt.titleSmall?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: tt.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.85),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.keyboard_arrow_up_rounded,
+                color: Colors.white,
+                size: 28,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _HeaderIconButton extends StatelessWidget {
   const _HeaderIconButton({required this.child, required this.onTap});
@@ -654,90 +759,6 @@ class _ServiceCard extends StatelessWidget {
                 style: tt.labelSmall?.copyWith(
                   color: AppColors.onSurfaceVariant,
                   fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _RidesFeatureCard extends StatelessWidget {
-  const _RidesFeatureCard({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(22),
-        onTap: onTap,
-        child: Ink(
-          height: 96,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceContainerLowest,
-            borderRadius: BorderRadius.circular(22),
-            boxShadow: AppColors.ambientShadow,
-            border: Border.all(
-              color: AppColors.secondary.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceTint,
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: const Icon(
-                  Icons.directions_car_filled_rounded,
-                  color: AppColors.secondary,
-                  size: 34,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Rides',
-                      style: tt.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'City rides · book now',
-                      style: tt.bodyMedium?.copyWith(
-                        color: AppColors.onSurfaceVariant,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceTint,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.arrow_forward_ios_rounded,
-                  size: 14,
-                  color: AppColors.secondary,
                 ),
               ),
             ],

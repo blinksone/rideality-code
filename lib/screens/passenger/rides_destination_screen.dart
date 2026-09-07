@@ -7,10 +7,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../core/api/api_exception.dart';
 import '../../core/maps_config.dart';
 import '../../core/storage/token_storage.dart';
+import '../../core/vehicle_catalog.dart';
 import '../../models/api_models.dart';
 import '../../models/place_models.dart';
+import '../../models/trip_models.dart';
 import '../../services/driver_location_tracker.dart';
 import '../../services/places_api_service.dart';
+import '../../services/trips_api_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/rideality_draggable_pin_map.dart';
 import 'cargo_details_screen.dart';
@@ -24,7 +27,7 @@ class RidesDestinationScreen extends StatefulWidget {
     required this.places,
     this.canBook = true,
     this.initialDestination,
-    this.vehicleType = 'sedan',
+    this.vehicleType = 'economy',
   });
 
   static const routeName = '/rides';
@@ -43,7 +46,7 @@ class RidesDestinationArgs {
     required this.places,
     this.canBook = true,
     this.initialDestination,
-    this.vehicleType = 'sedan',
+    this.vehicleType = 'economy',
   });
 
   final List<SavedPlace> places;
@@ -67,17 +70,58 @@ class _RidesDestinationScreenState extends State<RidesDestinationScreen> {
   bool _reverseGeocoding = false;
   bool _requesting = false;
   Timer? _reverseDebounce;
+  Timer? _supplyPollTimer;
+  List<NearbySupplyPin> _supplyPins = const [];
+  String? _cityId;
+  bool _supplyPollInFlight = false;
 
   @override
   void initState() {
     super.initState();
     unawaited(_bootstrapPickup());
+    unawaited(_resolveCityId());
+    _startSupplyPolling();
   }
 
   @override
   void dispose() {
     _reverseDebounce?.cancel();
+    _supplyPollTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _resolveCityId() async {
+    final id = await DashboardPrefs.instance.fleetCityId;
+    if (!mounted) return;
+    _cityId = id;
+  }
+
+  void _startSupplyPolling() {
+    _supplyPollTimer?.cancel();
+    unawaited(_pollNearbySupply());
+    _supplyPollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_pollNearbySupply()),
+    );
+  }
+
+  Future<void> _pollNearbySupply() async {
+    if (_supplyPollInFlight || !mounted) return;
+    _supplyPollInFlight = true;
+    try {
+      final pins = await TripsApiService.instance.getNearbySupply(
+        latitude: _pickupCenter.latitude,
+        longitude: _pickupCenter.longitude,
+        product: VehicleCatalog.normalize(widget.vehicleType),
+        cityId: _cityId,
+      );
+      if (!mounted) return;
+      setState(() => _supplyPins = pins);
+    } catch (_) {
+      // Empty pins is normal.
+    } finally {
+      _supplyPollInFlight = false;
+    }
   }
 
   Future<void> _bootstrapPickup() async {
@@ -134,6 +178,7 @@ class _RidesDestinationScreenState extends State<RidesDestinationScreen> {
       _reverseGeocoding = true;
       _pickupCenter = center;
     });
+    unawaited(_pollNearbySupply());
     try {
       final loc = await _placesApi.reverseGeocode(
         latitude: center.latitude,
@@ -277,10 +322,7 @@ class _RidesDestinationScreenState extends State<RidesDestinationScreen> {
             dropoffAddress:
                 drop.address.isNotEmpty ? drop.address : drop.name,
             canBook: widget.canBook,
-            initialVehicleId: widget.vehicleType == 'sedan' ||
-                    widget.vehicleType == 'economy'
-                ? 'economy'
-                : widget.vehicleType,
+            initialVehicleId: VehicleCatalog.normalize(widget.vehicleType),
           ),
         );
       }
@@ -309,6 +351,7 @@ class _RidesDestinationScreenState extends State<RidesDestinationScreen> {
               key: _mapKey,
               center: _pickupCenter,
               onCenterSettled: _onPinSettled,
+              supplyPins: _supplyPins,
             )
           else
             const ColoredBox(

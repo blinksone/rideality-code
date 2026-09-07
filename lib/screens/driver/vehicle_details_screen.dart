@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/vehicle_catalog.dart';
 import '../../services/driver_api_service.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/app_button.dart';
@@ -27,15 +28,17 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
   final _colorController = TextEditingController();
   final _yearController = TextEditingController(text: '2022');
   final _seatsController = TextEditingController(text: '4');
-  String _vehicleType = 'sedan';
+  String _vehicleType = VehicleCatalog.economy;
   bool _loading = false;
 
   static const _labels = ['Phone', 'OTP', 'Identity', 'Vehicle', 'Docs'];
 
   static const _types = [
-    ('sedan', 'Sedan', Icons.directions_car_rounded),
-    ('suv', 'SUV', Icons.airport_shuttle_rounded),
-    ('lux', 'Luxury', Icons.diamond_outlined),
+    (VehicleCatalog.bike, 'Bike', Icons.two_wheeler_rounded),
+    (VehicleCatalog.rickshaw, 'Rickshaw', Icons.airport_shuttle_rounded),
+    (VehicleCatalog.economy, 'Economy', Icons.directions_car_rounded),
+    (VehicleCatalog.ac, 'AC', Icons.ac_unit_rounded),
+    (VehicleCatalog.cargo, 'Cargo', Icons.local_shipping_rounded),
   ];
 
   @override
@@ -60,7 +63,7 @@ class _VehicleDetailsScreenState extends State<VehicleDetailsScreen> {
     setState(() => _loading = true);
     try {
       await DriverApiService.instance.registerVehicle(
-        vehicleType: _vehicleType,
+        vehicleType: VehicleCatalog.normalize(_vehicleType),
         model: _modelController.text.trim(),
         numberPlate: _plateController.text.trim().toUpperCase(),
         color: _colorController.text.trim().isEmpty

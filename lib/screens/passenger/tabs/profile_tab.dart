@@ -190,6 +190,26 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<void> _logout() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Log out?'),
+        content: const Text(
+          'You will need to verify your phone again to sign back in.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Log out'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
     await AuthApiService.instance.logout();
     if (!mounted) return;
     Navigator.of(context).pushNamedAndRemoveUntil(

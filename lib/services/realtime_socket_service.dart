@@ -7,6 +7,7 @@ import '../core/api/api_client.dart';
 import '../core/api/api_config.dart';
 import '../core/storage/active_trip_store.dart';
 import '../core/storage/token_storage.dart';
+import '../core/vehicle_catalog.dart';
 import '../models/trip_models.dart';
 
 /// Socket.IO client for rider/driver real-time trips (JWT handshake).
@@ -22,6 +23,7 @@ class RealtimeSocketService {
   SessionRole? _role;
   String? _rideId;
   String? _vehicleType;
+  String? _cityId;
   List<String> _serviceModes = const ['rides'];
   bool _connecting = false;
 
@@ -67,14 +69,20 @@ class RealtimeSocketService {
   Future<void> connectAsDriver({
     String? vehicleType,
     String? rideId,
+    String? cityId,
     List<String>? serviceModes,
   }) async {
     _role = SessionRole.driver;
     // Preserve existing session fields unless explicitly overridden.
     if (vehicleType != null && vehicleType.isNotEmpty) {
-      _vehicleType = vehicleType;
+      _vehicleType = VehicleCatalog.normalize(vehicleType);
     } else {
-      _vehicleType ??= 'sedan';
+      _vehicleType ??= VehicleCatalog.economy;
+    }
+    if (cityId != null && cityId.isNotEmpty) {
+      _cityId = cityId;
+    } else {
+      _cityId ??= await DashboardPrefs.instance.fleetCityId;
     }
     if (rideId != null && rideId.isNotEmpty) {
       _rideId = rideId;
@@ -224,6 +232,7 @@ class RealtimeSocketService {
       await connectAsDriver(
         vehicleType: vehicle,
         rideId: rideId,
+        cityId: _cityId,
         serviceModes: modes,
       );
     } else {
@@ -241,10 +250,10 @@ class RealtimeSocketService {
       payload['rideId'] = _rideId;
     }
     if (role == SessionRole.driver) {
-      payload['vehicleType'] =
-          (_vehicleType != null && _vehicleType!.isNotEmpty)
-              ? _vehicleType
-              : 'sedan';
+      payload['vehicleType'] = VehicleCatalog.normalize(_vehicleType);
+      if (_cityId != null && _cityId!.isNotEmpty) {
+        payload['cityId'] = _cityId;
+      }
       // Always include serviceModes so dispatch filters stay warm while online.
       payload['serviceModes'] =
           _serviceModes.isNotEmpty ? _serviceModes : const ['rides'];
@@ -256,12 +265,16 @@ class RealtimeSocketService {
   Future<void> updateSession({
     String? rideId,
     String? vehicleType,
+    String? cityId,
     SessionRole? role,
     List<String>? serviceModes,
   }) async {
     if (role != null) _role = role;
     if (rideId != null) _rideId = rideId;
-    if (vehicleType != null) _vehicleType = vehicleType;
+    if (vehicleType != null) {
+      _vehicleType = VehicleCatalog.normalize(vehicleType);
+    }
+    if (cityId != null && cityId.isNotEmpty) _cityId = cityId;
     if (serviceModes != null && serviceModes.isNotEmpty) {
       _serviceModes = serviceModes;
     }
@@ -296,21 +309,25 @@ class RealtimeSocketService {
     double? heading,
     double? speed,
     String? vehicleType,
+    String? cityId,
     List<String>? serviceModes,
   }) {
     if (_socket?.connected != true) return;
+    final product = VehicleCatalog.normalize(
+      vehicleType ?? _vehicleType,
+    );
+    final city = (cityId != null && cityId.isNotEmpty) ? cityId : _cityId;
     final payload = <String, dynamic>{
       'lat': lat,
       'lng': lng,
-      'vehicleType': (vehicleType ?? _vehicleType)?.isNotEmpty == true
-          ? (vehicleType ?? _vehicleType)
-          : 'sedan',
+      'vehicleType': product,
       'serviceModes': (serviceModes != null && serviceModes.isNotEmpty)
           ? serviceModes
           : (_serviceModes.isNotEmpty ? _serviceModes : const ['rides']),
     };
     if (heading != null) payload['heading'] = heading;
     if (speed != null) payload['speed'] = speed;
+    if (city != null && city.isNotEmpty) payload['cityId'] = city;
     // Active ride id helps server scope broadcasts and skip completed rooms.
     if (_rideId != null && _rideId!.isNotEmpty) {
       payload['rideId'] = _rideId;

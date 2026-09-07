@@ -435,7 +435,8 @@ class _ActiveRideScreenState extends State<ActiveRideScreen> {
                 children: [
                   IconButton(
                     onPressed: () => Navigator.of(context).maybePop(),
-                    icon: const Icon(Icons.arrow_back_rounded),
+                    tooltip: 'Minimize',
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
                     style: IconButton.styleFrom(
                       backgroundColor: AppColors.surfaceContainerLowest,
                     ),

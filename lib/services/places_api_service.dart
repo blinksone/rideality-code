@@ -18,10 +18,27 @@ class PlacesApiService {
     Map<String, dynamic> json,
     T Function(Map<String, dynamic>) map,
   ) {
-    final data = _unwrap(json);
-    final raw = data['items'] ?? data['places'] ?? data['results'] ?? data;
-    if (raw is List) {
-      return raw
+    // sendSuccess(res, array) → { data: [ ... ] }
+    final data = json['data'];
+    if (data is List) {
+      return data
+          .whereType<Map>()
+          .map((e) => map(e.cast<String, dynamic>()))
+          .toList();
+    }
+    if (data is Map) {
+      final raw =
+          data['items'] ?? data['places'] ?? data['results'] ?? data['hits'];
+      if (raw is List) {
+        return raw
+            .whereType<Map>()
+            .map((e) => map(e.cast<String, dynamic>()))
+            .toList();
+      }
+    }
+    final root = json['items'] ?? json['places'] ?? json['results'];
+    if (root is List) {
+      return root
           .whereType<Map>()
           .map((e) => map(e.cast<String, dynamic>()))
           .toList();

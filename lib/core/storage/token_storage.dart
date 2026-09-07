@@ -157,6 +157,10 @@ class DashboardPrefs {
 
   Future<String?> get fleetCityName async =>
       (await SharedPreferences.getInstance()).getString(_fleetCityName);
+
+  /// Geo city UUID saved during fleet onboarding (for Redis supply / hello).
+  Future<String?> get fleetCityId async =>
+      (await SharedPreferences.getInstance()).getString(_fleetCityId);
 }
 
 /// In-app notification inbox (local). Live server has prefs APIs only, no feed.

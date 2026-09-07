@@ -110,16 +110,29 @@ class PlaceSearchHit {
       };
     }
 
+    final source = parseSource(json['source']?.toString());
+    // Backend search hits:
+    // LOCAL  → placeId = googlePlaceId?, databaseId = uuid
+    // GOOGLE → placeId = google place id, databaseId = null
+    final rawPlaceId = json['placeId']?.toString();
+    final databaseId =
+        json['databaseId']?.toString() ?? json['id']?.toString();
+    final googlePlaceId = json['googlePlaceId']?.toString() ??
+        (source == PlaceHitSource.google
+            ? rawPlaceId
+            : (source == PlaceHitSource.local ? rawPlaceId : null));
+
     return PlaceSearchHit(
       name: json['name']?.toString() ?? json['title']?.toString() ?? '',
-      address: json['address']?.toString() ?? json['subtitle']?.toString() ?? '',
-      placeId: json['placeId']?.toString() ??
-          json['databaseId']?.toString() ??
-          json['id']?.toString(),
-      googlePlaceId: json['googlePlaceId']?.toString(),
+      address: json['address']?.toString() ??
+          json['description']?.toString() ??
+          json['subtitle']?.toString() ??
+          '',
+      placeId: databaseId,
+      googlePlaceId: googlePlaceId,
       latitude: numOrNull(json['latitude'] ?? json['lat']),
       longitude: numOrNull(json['longitude'] ?? json['lng']),
-      source: parseSource(json['source']?.toString()),
+      source: source,
       type: json['type']?.toString(),
       distanceKm: numOrNull(json['distanceKm']),
     );

@@ -603,7 +603,7 @@ class DestinationPick {
     required this.address,
     this.latitude,
     this.longitude,
-    this.vehicleType = 'sedan',
+    this.vehicleType = 'economy',
   });
 
   final String address;
@@ -680,6 +680,8 @@ class TripQuote {
     this.durationMin,
     this.bookingType = 'ride',
     this.options = const [],
+    this.polyline,
+    this.routePoints = const [],
   });
 
   final String currency;
@@ -687,6 +689,8 @@ class TripQuote {
   final int? durationMin;
   final String bookingType;
   final List<TripQuoteOption> options;
+  final String? polyline;
+  final List<LatLngPoint> routePoints;
 
   List<TripQuoteOption> get availableOptions =>
       options.where((o) => o.available).toList();
@@ -719,6 +723,156 @@ class TripQuote {
       durationMin: intOrNull(json['durationMin'] ?? json['duration_min']),
       bookingType: json['bookingType']?.toString() ?? 'ride',
       options: options,
+      polyline: json['polyline']?.toString() ??
+          json['encodedPolyline']?.toString() ??
+          json['routePolyline']?.toString(),
+      routePoints: _parseLatLngList(
+        json['routePoints'] ?? json['points'] ?? json['path'],
+      ),
     );
   }
+}
+
+List<LatLngPoint> _parseLatLngList(dynamic raw) {
+  if (raw is! List) return const [];
+  final out = <LatLngPoint>[];
+  for (final item in raw) {
+    if (item is Map) {
+      final lat = item['lat'] ?? item['latitude'];
+      final lng = item['lng'] ?? item['longitude'];
+      final la = lat is num ? lat.toDouble() : double.tryParse('$lat');
+      final lo = lng is num ? lng.toDouble() : double.tryParse('$lng');
+      if (la != null && lo != null) out.add(LatLngPoint(la, lo));
+    } else if (item is List && item.length >= 2) {
+      final la = item[0] is num
+          ? (item[0] as num).toDouble()
+          : double.tryParse('${item[0]}');
+      final lo = item[1] is num
+          ? (item[1] as num).toDouble()
+          : double.tryParse('${item[1]}');
+      if (la != null && lo != null) out.add(LatLngPoint(la, lo));
+    }
+  }
+  return out;
+}
+
+/// Simple lat/lng pair (no Flutter Maps dependency in models).
+class LatLngPoint {
+  const LatLngPoint(this.latitude, this.longitude);
+  final double latitude;
+  final double longitude;
+}
+
+/// Anonymous map pin from GET /trips/nearby-supply `data.pins[]`.
+/// No driverId — Redis jittered supply only.
+class NearbySupplyPin {
+  const NearbySupplyPin({
+    required this.latitude,
+    required this.longitude,
+    this.etaMin,
+    this.product,
+  });
+
+  final double latitude;
+  final double longitude;
+  final int? etaMin;
+  final String? product;
+
+  factory NearbySupplyPin.fromJson(Map<String, dynamic> json) {
+    double numV(dynamic v, [double d = 0]) {
+      if (v is num) return v.toDouble();
+      return double.tryParse(v?.toString() ?? '') ?? d;
+    }
+
+    int? intOrNull(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.round();
+      return int.tryParse(v.toString());
+    }
+
+    return NearbySupplyPin(
+      latitude: numV(json['lat'] ?? json['latitude']),
+      longitude: numV(json['lng'] ?? json['longitude']),
+      etaMin: intOrNull(json['etaMin'] ?? json['eta_min']),
+      product: json['product']?.toString() ??
+          json['vehicleType']?.toString(),
+    );
+  }
+}
+
+/// POST /trips/route response.
+class TripRoute {
+  const TripRoute({
+    this.points = const [],
+    this.encodedPolyline,
+    this.distanceKm,
+    this.durationMin,
+  });
+
+  final List<LatLngPoint> points;
+  final String? encodedPolyline;
+  final double? distanceKm;
+  final int? durationMin;
+
+  factory TripRoute.fromJson(Map<String, dynamic> json) {
+    double? numOrNull(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString());
+    }
+
+    int? intOrNull(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.round();
+      return int.tryParse(v.toString());
+    }
+
+    return TripRoute(
+      points: _parseLatLngList(
+        json['points'] ??
+            json['routePoints'] ??
+            json['path'] ??
+            json['coordinates'],
+      ),
+      encodedPolyline: json['polyline']?.toString() ??
+          json['encodedPolyline']?.toString() ??
+          json['overviewPolyline']?.toString(),
+      distanceKm: numOrNull(json['distanceKm'] ?? json['distance_km']),
+      durationMin: intOrNull(json['durationMin'] ?? json['duration_min']),
+    );
+  }
+}
+
+/// Decode Google-encoded polyline into [LatLngPoint]s.
+List<LatLngPoint> decodePolyline(String encoded) {
+  final points = <LatLngPoint>[];
+  var index = 0;
+  var lat = 0;
+  var lng = 0;
+
+  while (index < encoded.length) {
+    var shift = 0;
+    var result = 0;
+    int b;
+    do {
+      b = encoded.codeUnitAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    final dlat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+    lat += dlat;
+
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.codeUnitAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    final dlng = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+    lng += dlng;
+
+    points.add(LatLngPoint(lat / 1e5, lng / 1e5));
+  }
+  return points;
 }

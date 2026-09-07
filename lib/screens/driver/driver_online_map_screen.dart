@@ -8,6 +8,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../core/api/api_config.dart';
 import '../../core/api/api_exception.dart';
 import '../../core/storage/token_storage.dart';
+import '../../core/vehicle_catalog.dart';
 import '../../models/api_models.dart';
 import '../../models/trip_models.dart';
 import '../../services/driver_api_service.dart';
@@ -107,9 +108,10 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
 
   String get _vehicleType {
     final raw = widget.driver.vehicleType;
-    if (raw == null || raw.toString().isEmpty) return 'sedan';
-    return raw.toString().toLowerCase();
+    return VehicleCatalog.normalize(raw);
   }
+
+  Future<String?> get _cityId async => DashboardPrefs.instance.fleetCityId;
 
   List<String> get _modesApi => DriverServiceMode.toApiList(_serviceModes);
 
@@ -145,13 +147,16 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
     await _offerSub?.cancel();
     await _connSub?.cancel();
     try {
+      final cityId = await _cityId;
       await _socket.connectAsDriver(
         vehicleType: _vehicleType,
+        cityId: cityId,
         serviceModes: _modesApi,
       );
       try {
         await _location.start(
           vehicleType: _vehicleType,
+          cityId: cityId,
           serviceModes: _modesApi,
         );
       } catch (_) {
@@ -173,12 +178,14 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
       });
       _connSub = _socket.connectionChanges.listen((ok) {
         if (ok && _driver.isOnline) {
-          unawaited(
-            _socket.connectAsDriver(
+          unawaited(() async {
+            final cityId = await _cityId;
+            await _socket.connectAsDriver(
               vehicleType: _vehicleType,
+              cityId: cityId,
               serviceModes: _modesApi,
-            ),
-          );
+            );
+          }());
         }
       });
     } catch (e) {
@@ -221,8 +228,10 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
       widget.onDriverUpdated?.call(_driver);
       _location.updateServiceModes(DriverServiceMode.toApiList(modes));
       if (_driver.isOnline) {
+        final cityId = await DashboardPrefs.instance.fleetCityId;
         await _socket.updateSession(
           vehicleType: _vehicleType,
+          cityId: cityId,
           role: SessionRole.driver,
           serviceModes: DriverServiceMode.toApiList(modes),
         );
@@ -341,6 +350,7 @@ class _DriverOnlineMapScreenState extends State<DriverOnlineMapScreen> {
         rideId: o.rideId,
         role: SessionRole.driver,
         vehicleType: _vehicleType,
+        cityId: await DashboardPrefs.instance.fleetCityId,
         serviceModes: _modesApi,
       );
       if (!mounted) return;

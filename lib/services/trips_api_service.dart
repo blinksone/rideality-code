@@ -1,5 +1,6 @@
 import '../core/api/api_client.dart';
 import '../core/api/api_exception.dart';
+import '../core/vehicle_catalog.dart';
 import '../models/trip_models.dart';
 
 class TripsApiService {
@@ -58,7 +59,7 @@ class TripsApiService {
       body['dropoffAddress'] = dropoffAddress;
     }
     if (vehicleType != null && vehicleType.isNotEmpty) {
-      body['vehicleType'] = vehicleType;
+      body['vehicleType'] = VehicleCatalog.normalize(vehicleType);
     }
     if (bookingType != null && bookingType.isNotEmpty) {
       body['bookingType'] = bookingType;
@@ -111,6 +112,54 @@ class TripsApiService {
 
     final json = await _client.post('/trips/quote', body: body);
     return TripQuote.fromJson(_data(json));
+  }
+
+  /// POST /trips/route — road polyline between pickup and dropoff.
+  Future<TripRoute> getRoute({
+    required double pickupLat,
+    required double pickupLng,
+    required double dropoffLat,
+    required double dropoffLng,
+  }) async {
+    final json = await _client.post(
+      '/trips/route',
+      body: {
+        'pickupLat': pickupLat,
+        'pickupLng': pickupLng,
+        'dropoffLat': dropoffLat,
+        'dropoffLng': dropoffLng,
+      },
+    );
+    return TripRoute.fromJson(_data(json));
+  }
+
+  /// GET /trips/nearby-supply — Redis map pins (no driver identities).
+  Future<List<NearbySupplyPin>> getNearbySupply({
+    required double latitude,
+    required double longitude,
+    required String product,
+    String? cityId,
+  }) async {
+    final params = <String, String>{
+      'latitude': '$latitude',
+      'longitude': '$longitude',
+      'product': product,
+    };
+    if (cityId != null && cityId.isNotEmpty) {
+      params['cityId'] = cityId;
+    }
+    final qs = Uri(queryParameters: params).query;
+    final json = await _client.get('/trips/nearby-supply?$qs');
+    final data = json['data'];
+    final raw = data is Map
+        ? (data['pins'] ?? data['items'])
+        : (data is List ? data : json['pins']);
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => NearbySupplyPin.fromJson(e.cast<String, dynamic>()))
+        .where((p) => p.latitude != 0 || p.longitude != 0)
+        .toList();
   }
 
   Future<Trip> getTrip(String id) async {

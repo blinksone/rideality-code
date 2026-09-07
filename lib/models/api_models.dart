@@ -1042,6 +1042,40 @@ class RideSummary {
   final String? createdAt;
   final String? vehicleType;
 
+  /// Still in progress — can reopen ActiveRideScreen.
+  bool get isActive {
+    final s = status.toLowerCase().trim();
+    if (s.isEmpty) return false;
+    if (s.contains('cancel') || s.contains('complete')) return false;
+    return s == 'requested' ||
+        s == 'accepted' ||
+        s == 'assigned' ||
+        s == 'arrived' ||
+        s == 'in_progress' ||
+        s.contains('en_route') ||
+        s.contains('enroute') ||
+        s.contains('picked') ||
+        s.contains('progress') ||
+        s.contains('active');
+  }
+
+  String get statusLabel =>
+      status.replaceAll('_', ' ').toUpperCase();
+
+  /// Display name for product code: bike → Bike, economy → Economy, etc.
+  String get vehicleTypeLabel {
+    final raw = (vehicleType ?? '').trim();
+    if (raw.isEmpty) return '';
+    return switch (raw.toLowerCase()) {
+      'bike' => 'Bike',
+      'rickshaw' => 'Rickshaw',
+      'economy' || 'sedan' => 'Economy',
+      'ac' => 'AC',
+      'cargo' => 'Cargo',
+      _ => raw[0].toUpperCase() + raw.substring(1).toLowerCase(),
+    };
+  }
+
   factory RideSummary.fromJson(Map<String, dynamic> json) {
     final pickup = (json['pickup'] is Map)
         ? (json['pickup'] as Map).cast<String, dynamic>()
@@ -1070,9 +1104,15 @@ class RideSummary {
           'PKR',
       createdAt: json['createdAt']?.toString() ?? json['startedAt']?.toString(),
       vehicleType: json['vehicleType']?.toString() ??
+          json['vehicle_type']?.toString() ??
           (json['vehicle'] is Map
-              ? (json['vehicle'] as Map)['vehicleType']?.toString()
-              : null),
+              ? ((json['vehicle'] as Map)['vehicleType'] ??
+                      (json['vehicle'] as Map)['type'] ??
+                      (json['vehicle'] as Map)['code'])
+                  ?.toString()
+              : null) ??
+          json['product']?.toString() ??
+          json['productCode']?.toString(),
     );
   }
 }
